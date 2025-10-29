@@ -3,7 +3,13 @@ from __future__ import annotations
 import random
 
 from stck.data import HistoricalData
-from stck.formulas import FormulaFactory, MovingAverageNode, TradingFormula
+from stck.formulas import (
+    BinaryNode,
+    FormulaFactory,
+    MovingAverageNode,
+    PriceNode,
+    TradingFormula,
+)
 from stck.portfolio import PortfolioBacktester, TickerAllocation
 
 
@@ -30,5 +36,23 @@ def test_backtester_allocates_cash_and_updates_equity():
 
     # Equity should increase as prices go up
     assert result.equity_curve[0] <= result.equity_curve[-1]
-    # Cash should decrease once invested
-    assert result.cash_curve[0] >= result.cash_curve[-1]
+    # Final cash should increase because only a capped portion is invested.
+    assert result.cash_curve[-1] > result.cash_curve[0]
+
+
+def test_factory_clamps_complexity() -> None:
+    factory = FormulaFactory(rng=random.Random(42))
+    leaf = PriceNode()
+    complex_root: BinaryNode = BinaryNode(op=lambda a, b: a + b, left=leaf, right=leaf, name="add")
+    for _ in range(6):
+        complex_root = BinaryNode(
+            op=lambda a, b: a * b,
+            left=complex_root,
+            right=BinaryNode(op=lambda a, b: a + b, left=leaf, right=leaf, name="add"),
+            name="mul",
+        )
+    formula = TradingFormula(root=complex_root, priority=3, evaluation_windows=[10, 20])
+    clamped = factory.clamp_complexity(formula, max_complexity=5)
+    assert clamped.complexity() <= 5
+    assert clamped.priority == formula.priority
+    assert clamped.evaluation_windows == formula.evaluation_windows

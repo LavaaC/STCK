@@ -78,6 +78,22 @@ class PriceHistory:
             return []
         return self.prices[-length:]
 
+    def rolling_min(self, window: int) -> float:
+        if window <= 0:
+            return min(self.prices)
+        values = self.tail(window)
+        if not values:
+            return min(self.prices)
+        return min(values)
+
+    def rolling_max(self, window: int) -> float:
+        if window <= 0:
+            return max(self.prices)
+        values = self.tail(window)
+        if not values:
+            return max(self.prices)
+        return max(values)
+
     def percent_change(self, periods: int) -> float:
         if periods <= 0 or periods >= len(self.prices):
             return 0.0
@@ -101,3 +117,49 @@ class PriceHistory:
         mean = sum(values) / len(values)
         variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
         return variance**0.5
+
+    def exponential_moving_average(self, window: int) -> float:
+        if window <= 0:
+            return self.current
+        alpha = 2.0 / (window + 1)
+        ema = self.prices[0]
+        for price in self.prices[1:]:
+            ema = alpha * price + (1 - alpha) * ema
+        return ema
+
+    def relative_strength_index(self, window: int) -> float:
+        if window <= 0 or len(self.prices) <= 1:
+            return 50.0
+        deltas = [self.prices[i] - self.prices[i - 1] for i in range(1, len(self.prices))]
+        window = min(window, len(deltas))
+        if window == 0:
+            return 50.0
+        recent = deltas[-window:]
+        gains = sum(delta for delta in recent if delta > 0) / window
+        losses = sum(-delta for delta in recent if delta < 0) / window
+        if losses == 0:
+            return 100.0 if gains > 0 else 50.0
+        if gains == 0:
+            return 0.0
+        rs = gains / losses
+        return 100.0 - (100.0 / (1 + rs))
+
+    def macd(self, fast: int, slow: int) -> float:
+        if fast <= 0:
+            fast = 1
+        if slow <= fast:
+            slow = fast + 1
+        fast_ema = self.exponential_moving_average(fast)
+        slow_ema = self.exponential_moving_average(slow)
+        return fast_ema - slow_ema
+
+    def bollinger_band_width(self, window: int, multiplier: float = 2.0) -> float:
+        if window <= 0:
+            window = 1
+        mean = self.rolling_mean(window)
+        std = self.rolling_std(window)
+        upper = mean + multiplier * std
+        lower = mean - multiplier * std
+        if mean == 0:
+            return 0.0
+        return (upper - lower) / mean

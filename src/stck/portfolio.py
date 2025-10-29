@@ -47,10 +47,31 @@ class BacktestResult:
     allocations: List[Dict[str, float]]
     equity_curve: List[float]
     cash_curve: List[float]
+    value_breakdown: List[Dict[str, float]]
+    value_percentages: List[Dict[str, float]]
+    tickers: List[str]
+    start_index: int = 0
 
     @property
     def final_equity(self) -> float:
         return self.equity_curve[-1]
+
+    @property
+    def final_cash(self) -> float:
+        return self.cash_curve[-1]
+
+    def top_stock(self) -> tuple[str, float] | None:
+        if not self.value_breakdown:
+            return None
+        final_values = {
+            ticker: value
+            for ticker, value in self.value_breakdown[-1].items()
+            if ticker != "CASH"
+        }
+        if not final_values:
+            return None
+        ticker = max(final_values, key=final_values.get)
+        return ticker, final_values[ticker]
 
     def max_drawdown(self) -> float:
         peak = self.equity_curve[0]
@@ -75,23 +96,51 @@ class PortfolioBacktester:
     def _current_prices(self, index: int) -> Dict[str, float]:
         return {ticker: series[index] for ticker, series in self.data.prices.items()}
 
-    def run(self) -> BacktestResult:
+    def run(self, *, start_index: int = 0) -> BacktestResult:
+        if start_index < 0 or start_index >= len(self.data):
+            raise ValueError("start_index must be within the price history range")
+
         portfolio = PortfolioState(cash=self.initial_cash)
         allocations_history: List[Dict[str, float]] = []
         equity_curve: List[float] = []
         cash_curve: List[float] = []
+        value_breakdown: List[Dict[str, float]] = []
+        value_percentages: List[Dict[str, float]] = []
+        tracked_tickers = sorted({allocation.ticker for allocation in self.allocations})
+        tracked_with_cash = tracked_tickers + ["CASH"]
 
-        for index in range(len(self.data)):
+        for index in range(start_index, len(self.data)):
             prices = self._current_prices(index)
             total_equity = portfolio.value(prices)
             desired = self._desired_allocations(index, total_equity)
             portfolio = self._rebalance(portfolio, prices, desired)
 
             allocations_history.append({ticker: shares for ticker, shares in portfolio.holdings.items()})
-            equity_curve.append(portfolio.value(prices))
+            equity = portfolio.value(prices)
+            equity_curve.append(equity)
             cash_curve.append(portfolio.cash)
 
-        return BacktestResult(allocations=allocations_history, equity_curve=equity_curve, cash_curve=cash_curve)
+            breakdown = {
+                ticker: portfolio.holdings.get(ticker, 0.0) * prices.get(ticker, 0.0)
+                for ticker in tracked_tickers
+            }
+            breakdown["CASH"] = portfolio.cash
+            value_breakdown.append(breakdown)
+            if equity > 0:
+                percentages = {ticker: value / equity for ticker, value in breakdown.items()}
+            else:
+                percentages = {ticker: 0.0 for ticker in breakdown}
+            value_percentages.append(percentages)
+
+        return BacktestResult(
+            allocations=allocations_history,
+            equity_curve=equity_curve,
+            cash_curve=cash_curve,
+            value_breakdown=value_breakdown,
+            value_percentages=value_percentages,
+            tickers=tracked_with_cash,
+            start_index=start_index,
+        )
 
     def _desired_allocations(self, index: int, total_equity: float) -> Dict[str, float]:
         priority_order = sorted(self.allocations, key=lambda a: a.priority, reverse=True)
@@ -109,7 +158,12 @@ class PortfolioBacktester:
         desired_values = {
             ticker: (signal / total_signal) * total_equity for ticker, signal in signals.items()
         }
-        return desired_values
+
+        allocation_cap = 0.10 * total_equity
+        capped_values = {
+            ticker: min(value, allocation_cap) for ticker, value in desired_values.items()
+        }
+        return capped_values
 
     def _rebalance(
         self,

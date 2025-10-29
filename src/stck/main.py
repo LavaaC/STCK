@@ -46,7 +46,7 @@ def main(argv: List[str] | None = None) -> None:
     if args.cash is not None:
         config.initial_cash = args.cash
 
-    download = fetch_historical_data(DEFAULT_TICKERS, years=5)
+    download = fetch_historical_data(DEFAULT_TICKERS, years=6)
     engine = EvolutionEngine(download.data, config=config)
 
     ui = EvolutionTkUI(engine=engine, tickers=list(download.data.tickers))
