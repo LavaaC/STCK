@@ -71,12 +71,26 @@ def choose_strategy(force_git: bool, force_pip: bool) -> str:
     return "git" if is_git_checkout(PROJECT_ROOT) else "pip"
 
 
+def perform_update(
+    strategy: str,
+    *,
+    dry_run: bool = False,
+    allow_fallback: bool = False,
+) -> int:
+    if strategy == "git":
+        result = update_with_git(dry_run=dry_run)
+        if result != 0 and allow_fallback:
+            print("Git-based update failed, falling back to pip...")
+            return update_with_pip(dry_run=dry_run)
+        return result
+    return update_with_pip(dry_run=dry_run)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     strategy = choose_strategy(args.git, args.pip)
-    if strategy == "git":
-        return update_with_git(dry_run=args.dry_run)
-    return update_with_pip(dry_run=args.dry_run)
+    allow_fallback = not args.git and strategy == "git"
+    return perform_update(strategy, dry_run=args.dry_run, allow_fallback=allow_fallback)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
@@ -87,6 +101,7 @@ __all__ = [
     "choose_strategy",
     "is_git_checkout",
     "main",
+    "perform_update",
     "parse_args",
     "update_with_git",
     "update_with_pip",

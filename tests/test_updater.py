@@ -33,3 +33,31 @@ def test_update_with_pip_invokes_subprocess(monkeypatch):
         result = updater.update_with_pip()
     assert result == 0
     run_mock.assert_called_once()
+
+
+def test_main_falls_back_to_pip_when_git_fails(monkeypatch):
+    monkeypatch.setattr(updater, "choose_strategy", lambda *args, **kwargs: "git")
+    update_with_git = mock.Mock(return_value=1)
+    update_with_pip = mock.Mock(return_value=0)
+    monkeypatch.setattr(updater, "update_with_git", update_with_git)
+    monkeypatch.setattr(updater, "update_with_pip", update_with_pip)
+
+    result = updater.main([])
+
+    assert result == 0
+    update_with_git.assert_called_once_with(dry_run=False)
+    update_with_pip.assert_called_once_with(dry_run=False)
+
+
+def test_main_respects_force_git_flag(monkeypatch):
+    monkeypatch.setattr(updater, "choose_strategy", lambda *args, **kwargs: "git")
+    update_with_git = mock.Mock(return_value=2)
+    update_with_pip = mock.Mock(return_value=0)
+    monkeypatch.setattr(updater, "update_with_git", update_with_git)
+    monkeypatch.setattr(updater, "update_with_pip", update_with_pip)
+
+    result = updater.main(["--git"])
+
+    assert result == 2
+    update_with_git.assert_called_once_with(dry_run=False)
+    update_with_pip.assert_not_called()
