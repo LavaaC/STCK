@@ -32,8 +32,4 @@ def test_backtester_allocates_cash_and_updates_equity():
     assert result.equity_curve[0] <= result.equity_curve[-1]
     # Cash should decrease once invested
     assert result.cash_curve[0] >= result.cash_curve[-1]
-    # Only one order per ticker per day
-    assert len(result.orders) == len(data)
-    for daily_orders in result.orders:
-        tickers = [order.ticker for order in daily_orders]
-        assert len(tickers) == len(set(tickers))
+

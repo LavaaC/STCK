@@ -11,7 +11,9 @@ from .data import PriceHistory
 
 
 class FormulaNode(Protocol):
-    """Interface for nodes that can be evaluated, mutated and serialized."""
+
+    """Interface for nodes that can be evaluated and mutated."""
+
 
     def evaluate(self, history: PriceHistory) -> float:
         ...
@@ -28,9 +30,7 @@ class FormulaNode(Protocol):
     def describe(self) -> str:
         ...
 
-    # ``to_dict`` / ``from_dict`` are implemented via helper functions because
-    # ``Protocol`` classes cannot easily define constructors.  Each concrete
-    # node participates in serialization through the helpers below.
+
 
 
 # Indicator nodes -----------------------------------------------------------------
@@ -220,27 +220,6 @@ class TradingFormula:
             evaluation_windows=list(self.evaluation_windows),
         )
 
-    def to_dict(self) -> Dict[str, object]:
-        """Serialize the formula and its evaluation windows to a JSON-friendly dict."""
-
-        return {
-            "priority": self.priority,
-            "evaluation_windows": list(self.evaluation_windows),
-            "root": _serialize_node(self.root),
-        }
-
-    @classmethod
-    def from_dict(cls, payload: Dict[str, object]) -> "TradingFormula":
-        """Deserialize a formula from :meth:`to_dict` output."""
-
-        priority = int(payload.get("priority", 0))
-        windows = [int(w) for w in payload.get("evaluation_windows", [])]
-        root_data = payload["root"]
-        if not isinstance(root_data, dict):
-            raise TypeError("Invalid formula payload: 'root' must be a mapping")
-        root = _deserialize_node(root_data)
-        return cls(root=root, priority=priority, evaluation_windows=windows)
-
 
 # Factories -----------------------------------------------------------------------
 
@@ -256,68 +235,6 @@ BINARY_OPERATIONS: Dict[str, Callable[[float, float], float]] = {
     "mul": lambda a, b: a * b,
     "div": _safe_divide,
 }
-
-
-def _serialize_node(node: FormulaNode) -> Dict[str, object]:
-    """Recursively serialize formula nodes to dictionaries."""
-
-    if isinstance(node, PriceNode):
-        return {"type": "price"}
-    if isinstance(node, MovingAverageNode):
-        return {"type": "moving_average", "window": node.window}
-    if isinstance(node, MomentumNode):
-        return {"type": "momentum", "lookback": node.lookback}
-    if isinstance(node, VolatilityNode):
-        return {"type": "volatility", "window": node.window}
-    if isinstance(node, UnaryNode):
-        return {
-            "type": "unary",
-            "name": node.name,
-            "operand": _serialize_node(node.operand),
-        }
-    if isinstance(node, BinaryNode):
-        return {
-            "type": "binary",
-            "name": node.name,
-            "left": _serialize_node(node.left),
-            "right": _serialize_node(node.right),
-        }
-    raise TypeError(f"Unsupported node type: {type(node)!r}")
-
-
-def _deserialize_node(payload: Dict[str, object]) -> FormulaNode:
-    """Recreate formula nodes from dictionaries produced by :func:`_serialize_node`."""
-
-    node_type = payload.get("type")
-    if node_type == "price":
-        return PriceNode()
-    if node_type == "moving_average":
-        return MovingAverageNode(window=int(payload["window"]))
-    if node_type == "momentum":
-        return MomentumNode(lookback=int(payload["lookback"]))
-    if node_type == "volatility":
-        return VolatilityNode(window=int(payload["window"]))
-    if node_type == "unary":
-        name = payload.get("name")
-        operand_data = payload.get("operand")
-        if name not in UNARY_OPERATIONS:
-            raise KeyError(f"Unknown unary operation '{name}' in payload")
-        if not isinstance(operand_data, dict):
-            raise TypeError("Unary payload operand must be a mapping")
-        operand = _deserialize_node(operand_data)
-        return UnaryNode(op=UNARY_OPERATIONS[name], operand=operand, name=str(name))
-    if node_type == "binary":
-        name = payload.get("name")
-        if name not in BINARY_OPERATIONS:
-            raise KeyError(f"Unknown binary operation '{name}' in payload")
-        left_data = payload.get("left")
-        right_data = payload.get("right")
-        if not isinstance(left_data, dict) or not isinstance(right_data, dict):
-            raise TypeError("Binary payload requires 'left' and 'right' mappings")
-        left = _deserialize_node(left_data)
-        right = _deserialize_node(right_data)
-        return BinaryNode(op=BINARY_OPERATIONS[name], left=left, right=right, name=str(name))
-    raise KeyError(f"Unknown node type '{node_type}' in payload")
 
 
 INDICATOR_FACTORIES: List[Callable[[random.Random], FormulaNode]] = [

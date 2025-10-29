@@ -5,12 +5,14 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+
+
 from typing import List, Optional
 
 from .evolution import EvolutionEngine, GenerationReport, PopulationMetrics
 from .formulas import TradingFormula
-from .strategies import SavedStrategy, save_strategy
+
+
 
 
 @dataclass
@@ -22,7 +24,8 @@ class EvolutionConsoleUI:
     population: dict[str, List[TradingFormula]] = field(init=False)
     generation: int = field(default=0, init=False)
     history: List[PopulationMetrics] = field(default_factory=list, init=False)
-    latest_report: Optional[GenerationReport] = field(default=None, init=False)
+
+
 
     def __post_init__(self) -> None:
         self.population = self.engine.initialize_population(self.tickers)
@@ -113,13 +116,15 @@ class EvolutionConsoleUI:
         thread.start()
         try:
             while thread.is_alive():
-                command = input("[p]ause/[r]esume/[s]ave/[q]uit> ").strip().lower()
+
+                command = input("[p]ause/[r]esume/[q]uit> ").strip().lower()
+
                 if command in {"p", "pause"}:
                     self.pause()
                 elif command in {"r", "resume"}:
                     self.resume()
-                elif command in {"s", "save"}:
-                    self._prompt_save_strategy()
+
+
                 elif command in {"q", "quit"}:
                     self.stop()
                     break
@@ -177,7 +182,8 @@ class EvolutionConsoleUI:
 
     def _record_generation(self, report: GenerationReport) -> None:
         self.history.append(report.metrics)
-        self.latest_report = report
+
+
 
     def _render_report(self, report: GenerationReport) -> None:
         metrics = report.metrics
@@ -194,50 +200,3 @@ class EvolutionConsoleUI:
         print(f"Formula description: {best.formula.describe()}")
         print("-" * 60)
 
-    # Saving -------------------------------------------------------------------------
-
-    def _prompt_save_strategy(self) -> None:
-        if not self.is_paused:
-            print("Pause the simulation before saving a strategy.")
-            return
-        if self.latest_report is None:
-            print("No generation has completed yet; nothing to save.")
-            return
-
-        report = self.latest_report
-        ticker = input("Ticker to save from (default best ticker)> ").strip().upper() or report.best_performance.ticker
-        if ticker not in report.ticker_performances:
-            print(f"Ticker '{ticker}' was not evaluated in the latest generation.")
-            return
-
-        performances = sorted(
-            report.ticker_performances[ticker], key=lambda p: p.average_final_equity, reverse=True
-        )
-        for idx, perf in enumerate(performances[:10]):
-            print(
-                f"[{idx}] equity={perf.average_final_equity:,.2f} drawdown={perf.average_max_drawdown:.2%}"
-                f" formula={perf.formula.describe()}"
-            )
-        selection = input("Select formula index to save (default 0)> ").strip()
-        choice = 0
-        if selection:
-            try:
-                choice = max(0, min(int(selection), len(performances) - 1))
-            except ValueError:
-                print("Invalid selection; defaulting to best formula.")
-                choice = 0
-
-        selected = performances[choice]
-        default_name = f"strategy_{ticker}_gen{report.generation + 1}.json"
-        path_input = input(f"Save path (default {default_name})> ").strip()
-        path = Path(path_input) if path_input else Path(default_name)
-
-        strategy = SavedStrategy(
-            ticker=ticker,
-            generation=report.generation,
-            formula=selected.formula.clone(),
-            training_length=len(self.engine.data),
-            initial_cash=self.engine.config.initial_cash,
-        )
-        location = save_strategy(path, strategy)
-        print(f"Saved strategy for {ticker} to {location}")
