@@ -39,7 +39,7 @@ class HistoricalData:
         series = self.prices[ticker]
         if index < 0 or index >= len(series):
             raise IndexError("index out of range for price series")
-        return PriceHistory(ticker=ticker, prices=list(series[: index + 1]))
+        return PriceHistory(ticker=ticker, prices=series, end_index=index)
 
     def tail(self, length: int) -> "HistoricalData":
         """Return a new :class:`HistoricalData` containing the trailing observations."""
@@ -62,42 +62,50 @@ class HistoricalData:
         return HistoricalData({ticker: series[start:end] for ticker, series in self.prices.items()})
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class PriceHistory:
     """Represents the price evolution of a ticker up to a specific point."""
 
     ticker: str
-    prices: List[float]
+    prices: Sequence[float]
+    end_index: int
+
+    def advance_to(self, index: int) -> None:
+        if index < 0 or index >= len(self.prices):
+            raise IndexError("index out of range for price history advance")
+        self.end_index = index
 
     @property
     def current(self) -> float:
-        return self.prices[-1]
+        return self.prices[self.end_index]
 
     def tail(self, length: int) -> List[float]:
         if length <= 0:
             return []
-        return self.prices[-length:]
+        start = max(0, self.end_index - length + 1)
+        return list(self.prices[start : self.end_index + 1])
 
     def rolling_min(self, window: int) -> float:
         if window <= 0:
-            return min(self.prices)
-        values = self.tail(window)
-        if not values:
-            return min(self.prices)
-        return min(values)
+            return min(self.prices[: self.end_index + 1])
+        start = max(0, self.end_index - window + 1)
+        if start > self.end_index:
+            return min(self.prices[: self.end_index + 1])
+        return min(self.prices[start : self.end_index + 1])
 
     def rolling_max(self, window: int) -> float:
         if window <= 0:
-            return max(self.prices)
-        values = self.tail(window)
-        if not values:
-            return max(self.prices)
-        return max(values)
+            return max(self.prices[: self.end_index + 1])
+        start = max(0, self.end_index - window + 1)
+        if start > self.end_index:
+            return max(self.prices[: self.end_index + 1])
+        return max(self.prices[start : self.end_index + 1])
 
     def percent_change(self, periods: int) -> float:
-        if periods <= 0 or periods >= len(self.prices):
+        if periods <= 0 or periods > self.end_index:
             return 0.0
-        prev = self.prices[-periods - 1]
+        prev_index = self.end_index - periods
+        prev = self.prices[prev_index]
         if prev == 0:
             return 0.0
         return (self.current - prev) / prev
@@ -105,17 +113,19 @@ class PriceHistory:
     def rolling_mean(self, window: int) -> float:
         if window <= 0:
             return self.current
-        values = self.tail(window)
-        if not values:
+        start = max(0, self.end_index - window + 1)
+        window_values = self.prices[start : self.end_index + 1]
+        if not window_values:
             return self.current
-        return sum(values) / len(values)
+        return sum(window_values) / len(window_values)
 
     def rolling_std(self, window: int) -> float:
-        values = self.tail(window)
-        if len(values) <= 1:
+        start = max(0, self.end_index - window + 1)
+        window_values = self.prices[start : self.end_index + 1]
+        if len(window_values) <= 1:
             return 0.0
-        mean = sum(values) / len(values)
-        variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+        mean = sum(window_values) / len(window_values)
+        variance = sum((v - mean) ** 2 for v in window_values) / (len(window_values) - 1)
         return variance**0.5
 
     def exponential_moving_average(self, window: int) -> float:
@@ -123,14 +133,17 @@ class PriceHistory:
             return self.current
         alpha = 2.0 / (window + 1)
         ema = self.prices[0]
-        for price in self.prices[1:]:
+        for price in self.prices[1 : self.end_index + 1]:
             ema = alpha * price + (1 - alpha) * ema
         return ema
 
     def relative_strength_index(self, window: int) -> float:
-        if window <= 0 or len(self.prices) <= 1:
+        if window <= 0 or self.end_index <= 0:
             return 50.0
-        deltas = [self.prices[i] - self.prices[i - 1] for i in range(1, len(self.prices))]
+        deltas = [
+            self.prices[i] - self.prices[i - 1]
+            for i in range(1, self.end_index + 1)
+        ]
         window = min(window, len(deltas))
         if window == 0:
             return 50.0
