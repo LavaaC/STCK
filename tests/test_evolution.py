@@ -97,6 +97,37 @@ def test_survivor_selection_keeps_top_half() -> None:
     assert survivor_gains == [9.0, 8.0, 7.0, 6.0, 5.0]
 
 
+def test_survivor_selection_removes_half_for_odd_population() -> None:
+    data = _build_mock_data()
+    config = EvolutionConfig(
+        population_size=9,
+        min_tickers=5,
+        initial_ticker_count=5,
+        initial_etf_count=1,
+    )
+    engine = EvolutionEngine(data=data, config=config, rng=random.Random(13))
+    population = engine.initialize_population(list(data.tickers))
+
+    performances = []
+    for idx, member in enumerate(population):
+        gain = float(idx)
+        performances.append(
+            MemberPerformance(
+                member=member,
+                final_equity=engine.config.initial_cash * (1 + gain / 100.0),
+                percent_gain=gain,
+                max_drawdown=0.0,
+            )
+        )
+
+    performances.sort(key=lambda perf: perf.percent_gain, reverse=True)
+    survivors = engine._select_survivors(performances)  # type: ignore[attr-defined]
+
+    assert len(survivors) == 4
+    survivor_gains = [perf.percent_gain for perf in performances if perf.member in survivors]
+    assert survivor_gains == [8.0, 7.0, 6.0, 5.0]
+
+
 def test_repopulate_preserves_survivors_and_mutates_clones() -> None:
     data = _build_mock_data()
     engine = EvolutionEngine(data=data, config=_default_config(), rng=random.Random(11))

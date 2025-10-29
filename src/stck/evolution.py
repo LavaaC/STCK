@@ -251,7 +251,7 @@ class EvolutionEngine:
         if top_count + bottom_count > count:
             bottom_count = max(0, count - top_count)
 
-        target_removals = max(bottom_count, int(round(count * 0.5)))
+        target_removals = max(bottom_count, math.ceil(count * 0.5))
         target_removals = min(target_removals, count - top_count)
         survivors_target = count - target_removals
 
