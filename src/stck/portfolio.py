@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from .data import HistoricalData
+from .data import HistoricalData, PriceHistory
 from .formulas import TradingFormula
 
 
@@ -92,9 +92,13 @@ class PortfolioBacktester:
         self.data = data
         self.allocations = allocations
         self.initial_cash = initial_cash
+        self._sorted_allocations = sorted(self.allocations, key=lambda a: a.priority, reverse=True)
+        self._tracked_tickers = sorted({allocation.ticker for allocation in self._sorted_allocations})
+        self._price_series = {ticker: self.data.prices[ticker] for ticker in self._tracked_tickers}
+        self._signals_buffer: Dict[str, float] = {}
 
-    def _current_prices(self, index: int) -> Dict[str, float]:
-        return {ticker: series[index] for ticker, series in self.data.prices.items()}
+    def _current_prices(self, index: int) -> Dict[str, float]:  # pragma: no cover - retained for API compatibility
+        return {ticker: series[index] for ticker, series in self._price_series.items()}
 
     def run(self, *, start_index: int = 0) -> BacktestResult:
         if start_index < 0 or start_index >= len(self.data):
@@ -106,31 +110,45 @@ class PortfolioBacktester:
         cash_curve: List[float] = []
         value_breakdown: List[Dict[str, float]] = []
         value_percentages: List[Dict[str, float]] = []
-        tracked_tickers = sorted({allocation.ticker for allocation in self.allocations})
+        tracked_tickers = self._tracked_tickers
         tracked_with_cash = tracked_tickers + ["CASH"]
 
+        prices_buffer = {ticker: 0.0 for ticker in tracked_tickers}
+        breakdown_buffer = {ticker: 0.0 for ticker in tracked_tickers}
+        percentage_buffer = {ticker: 0.0 for ticker in tracked_with_cash}
+        histories: Dict[str, PriceHistory] = {
+            ticker: PriceHistory(ticker=ticker, prices=series, end_index=start_index)
+            for ticker, series in self._price_series.items()
+        }
+
         for index in range(start_index, len(self.data)):
-            prices = self._current_prices(index)
-            total_equity = portfolio.value(prices)
-            desired = self._desired_allocations(index, total_equity)
-            portfolio = self._rebalance(portfolio, prices, desired)
+            for ticker, series in self._price_series.items():
+                prices_buffer[ticker] = series[index]
+                histories[ticker].advance_to(index)
+
+            total_equity = portfolio.value(prices_buffer)
+            desired = self._desired_allocations(index, total_equity, histories)
+            portfolio = self._rebalance(portfolio, prices_buffer, desired)
 
             allocations_history.append({ticker: shares for ticker, shares in portfolio.holdings.items()})
-            equity = portfolio.value(prices)
+            equity = portfolio.value(prices_buffer)
             equity_curve.append(equity)
             cash_curve.append(portfolio.cash)
 
-            breakdown = {
-                ticker: portfolio.holdings.get(ticker, 0.0) * prices.get(ticker, 0.0)
-                for ticker in tracked_tickers
-            }
+            for ticker in tracked_tickers:
+                breakdown_buffer[ticker] = (
+                    portfolio.holdings.get(ticker, 0.0) * prices_buffer[ticker]
+                )
+            breakdown = breakdown_buffer.copy()
             breakdown["CASH"] = portfolio.cash
             value_breakdown.append(breakdown)
             if equity > 0:
-                percentages = {ticker: value / equity for ticker, value in breakdown.items()}
+                for ticker, value in breakdown.items():
+                    percentage_buffer[ticker] = value / equity
             else:
-                percentages = {ticker: 0.0 for ticker in breakdown}
-            value_percentages.append(percentages)
+                for ticker in breakdown:
+                    percentage_buffer[ticker] = 0.0
+            value_percentages.append(dict(percentage_buffer))
 
         return BacktestResult(
             allocations=allocations_history,
@@ -142,11 +160,13 @@ class PortfolioBacktester:
             start_index=start_index,
         )
 
-    def _desired_allocations(self, index: int, total_equity: float) -> Dict[str, float]:
-        priority_order = sorted(self.allocations, key=lambda a: a.priority, reverse=True)
-        signals: Dict[str, float] = {}
-        for allocation in priority_order:
-            history = self.data.history_for(allocation.ticker, index)
+    def _desired_allocations(
+        self, index: int, total_equity: float, histories: Dict[str, PriceHistory]
+    ) -> Dict[str, float]:
+        signals = self._signals_buffer
+        signals.clear()
+        for allocation in self._sorted_allocations:
+            history = histories[allocation.ticker]
             weighted = allocation.weighted_signal(history)
             if weighted > 0:
                 signals[allocation.ticker] = signals.get(allocation.ticker, 0.0) + weighted

@@ -64,8 +64,8 @@ def test_evolution_produces_reports() -> None:
 
     evolved, report = engine.evolve(population, generation=0)
     assert len(evolved) == engine.config.population_size
-    assert report.metrics.top_final_cash >= report.metrics.top10_mean_final_cash
-    assert report.metrics.average_final_cash <= report.metrics.top_final_cash
+    assert report.metrics.top_final_equity >= report.metrics.top10_mean_final_equity
+    assert report.metrics.average_final_equity <= report.metrics.top_final_equity
     assert report.best_member is not None
     assert report.best_member.member.ticker_count() >= engine.config.min_tickers
     assert report.best_member.score >= report.performances[-1].score
@@ -89,7 +89,7 @@ def test_repopulate_keeps_survivors() -> None:
     engine = EvolutionEngine(data=data, config=_default_config(), rng=random.Random(11))
     population = engine.initialize_population(list(data.tickers))
     performances = [engine._evaluate_member(member) for member in population]  # type: ignore[attr-defined]
-    performances.sort(key=lambda p: (p.score, p.final_cash), reverse=True)
+    performances.sort(key=lambda p: (p.score, p.final_equity), reverse=True)
     selection = engine._select_survivors(performances)  # type: ignore[attr-defined]
     survivors = selection.survivors
     survivor_snapshots = [member.clone() for member in survivors]
@@ -155,10 +155,11 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
             final_cash=final_cash,
             cash_percent_gain=gain,
             final_equity=final_equity,
+            equity_percent_gain=gain,
             backtest=_dummy_backtest(final_equity, final_cash),
             complexity=0,
             complexity_penalty=0.0,
-            score=final_cash,
+            score=final_equity,
         )
 
     even_performances = [_performance_with_gain(gain) for gain in [60, 55, 50, 45, 40, 35]]

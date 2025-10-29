@@ -60,12 +60,13 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
 
     lines = [
         f"Generation {report.generation + 1}",
-        f"Top final cash: {metrics.top_final_cash:,.2f}",
-        f"Top 10% average cash: {metrics.top10_mean_final_cash:,.2f}",
-        f"Top 20% average cash: {metrics.top20_mean_final_cash:,.2f}",
-        f"Population average cash: {metrics.average_final_cash:,.2f}",
+        f"Top final equity: {metrics.top_final_equity:,.2f}",
+        f"Top 10% average equity: {metrics.top10_mean_final_equity:,.2f}",
+        f"Top 20% average equity: {metrics.top20_mean_final_equity:,.2f}",
+        f"Population average equity: {metrics.average_final_equity:,.2f}",
+        f"Best member final equity: {best.final_equity:,.2f}",
+        f"Best member equity gain: {best.equity_percent_gain:.2f}%",
         f"Best member final cash: {best.final_cash:,.2f}",
-        f"Best member cash gain: {best.cash_percent_gain:.2f}%",
     ]
 
     if report.transition is not None:
@@ -94,13 +95,13 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
             ]
         )
 
-    lines.extend(["", "Top performers (sorted by final cash):"])
+    lines.extend(["", "Top performers (sorted by final equity):"])
     for idx, performance in enumerate(report.performances[:5], start=1):
         lines.append(
             (
-                f"  #{idx}: Final cash {performance.final_cash:,.2f} | "
-                f"Cash gain {performance.cash_percent_gain:.2f}% | "
-                f"Final equity {performance.final_equity:,.2f}"
+                f"  #{idx}: Final equity {performance.final_equity:,.2f} | "
+                f"Equity gain {performance.equity_percent_gain:.2f}% | "
+                f"Final cash {performance.final_cash:,.2f}"
             )
         )
     if len(report.performances) > 5:
@@ -265,17 +266,17 @@ class EvolutionConsoleUI:
             return
 
         generations = [m.generation + 1 for m in self.history]
-        top_values = [m.top_final_cash for m in self.history]
-        top10_values = [m.top10_mean_final_cash for m in self.history]
-        top20_values = [m.top20_mean_final_cash for m in self.history]
+        top_values = [m.top_final_equity for m in self.history]
+        top10_values = [m.top10_mean_final_equity for m in self.history]
+        top20_values = [m.top20_mean_final_equity for m in self.history]
 
         plt.figure(figsize=(8, 4.5))
         plt.plot(generations, top_values, label="Top Member")
         plt.plot(generations, top10_values, label="Top 10% Avg")
         plt.plot(generations, top20_values, label="Top 20% Avg")
         plt.xlabel("Generation")
-        plt.ylabel("Final Cash")
-        plt.title("Evolution Final Cash by Generation")
+        plt.ylabel("Final Equity")
+        plt.title("Evolution Final Equity by Generation")
         plt.legend()
         plt.tight_layout()
 
@@ -322,7 +323,7 @@ class EvolutionTkUI:
         self._pause_event.set()
         self._report_queue: queue.Queue[GenerationReport | None] = queue.Queue()
         self._latest_report: GenerationReport | None = None
-        self._cash_points: List[tuple[int, float, float]] = []
+        self._equity_points: List[tuple[int, float, float]] = []
         self._detail_window: tk.Toplevel | None = None
         self._detail_text: tk.Text | None = None
         self._chart_window: tk.Toplevel | None = None
@@ -530,11 +531,11 @@ class EvolutionTkUI:
 
         self._figure = Figure(figsize=(7, 3.5), dpi=100)
         self._axis = self._figure.add_subplot(111)
-        self._axis.set_title("Top final cash by generation")
+        self._axis.set_title("Top final equity by generation")
         self._axis.set_xlabel("Generation")
-        self._axis.set_ylabel("Final cash")
-        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top cash")
-        (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg cash")
+        self._axis.set_ylabel("Final equity")
+        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top equity")
+        (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg equity")
         self._axis.legend(loc="upper left")
 
         self._chart_window = tk.Toplevel(self.root)
@@ -607,9 +608,9 @@ class EvolutionTkUI:
         for idx, performance in enumerate(report.performances[:5], start=1):
             lines.append(
                 (
-                    f"#{idx}: Final cash {performance.final_cash:,.2f} | "
-                    f"Cash gain {performance.cash_percent_gain:.2f}% | "
-                    f"Final equity {performance.final_equity:,.2f}"
+                    f"#{idx}: Final equity {performance.final_equity:,.2f} | "
+                    f"Equity gain {performance.equity_percent_gain:.2f}% | "
+                    f"Final cash {performance.final_cash:,.2f}"
                 )
             )
             result = performance.backtest
@@ -676,7 +677,7 @@ class EvolutionTkUI:
                 self._latest_report = report
                 self.status_text.set(self._format_report(report))
                 self._refresh_detail_window()
-                self._record_cash(report)
+                self._record_equity(report)
                 self._update_plot()
                 self._update_top_stock_charts()
         except queue.Empty:
@@ -693,22 +694,22 @@ class EvolutionTkUI:
             lines[0] = lines[0].replace("Generation ", "Generation: ")
         return "\n".join(lines)
 
-    def _record_cash(self, report: GenerationReport) -> None:
+    def _record_equity(self, report: GenerationReport) -> None:
         metrics = report.metrics
-        self._cash_points.append(
+        self._equity_points.append(
             (
                 report.generation + 1,
-                metrics.top_final_cash,
-                metrics.average_final_cash,
+                metrics.top_final_equity,
+                metrics.average_final_equity,
             )
         )
 
     def _update_plot(self) -> None:
         if not self._plot_enabled or self._canvas is None or self._axis is None:
             return
-        xs = [point[0] for point in self._cash_points]
-        top_values = [point[1] for point in self._cash_points]
-        average_values = [point[2] for point in self._cash_points]
+        xs = [point[0] for point in self._equity_points]
+        top_values = [point[1] for point in self._equity_points]
+        average_values = [point[2] for point in self._equity_points]
         self._line_top.set_data(xs, top_values)
         self._line_avg.set_data(xs, average_values)
         self._axis.relim()

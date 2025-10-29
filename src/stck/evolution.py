@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import math
 import random
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import List, Sequence, Tuple
+
+import os
 
 from .data import HistoricalData
 from .formulas import FormulaFactory, TradingFormula
@@ -103,6 +106,7 @@ class MemberPerformance:
     final_cash: float
     cash_percent_gain: float
     final_equity: float
+    equity_percent_gain: float
     backtest: BacktestResult
     complexity: int
     complexity_penalty: float
@@ -112,12 +116,12 @@ class MemberPerformance:
 @dataclass
 class PopulationMetrics:
     generation: int
-    top_final_cash: float
-    top10_mean_final_cash: float
-    top20_mean_final_cash: float
-    average_final_cash: float
-    top_cash_percent_gain: float
-    average_cash_percent_gain: float
+    top_final_equity: float
+    top10_mean_final_equity: float
+    top20_mean_final_equity: float
+    average_final_equity: float
+    top_equity_percent_gain: float
+    average_equity_percent_gain: float
 
 
 @dataclass
@@ -197,9 +201,9 @@ class EvolutionEngine:
     def evolve(
         self, population: List[PortfolioMember], generation: int = 0
     ) -> tuple[List[PortfolioMember], GenerationReport]:
-        performances = [self._evaluate_member(member) for member in population]
+        performances = self._evaluate_population(population)
         sorted_performances = sorted(
-            performances, key=lambda p: (p.score, p.final_cash), reverse=True
+            performances, key=lambda p: (p.score, p.final_equity), reverse=True
         )
         metrics = self._compute_population_metrics(performances, generation)
         selection = self._select_survivors(sorted_performances)
@@ -263,30 +267,42 @@ class EvolutionEngine:
         return self.rng.sample(universe, count)
 
     def _evaluate_member(self, member: PortfolioMember) -> MemberPerformance:
-        subset_prices = {ticker: self.data.prices[ticker] for ticker in member.tickers()}
-        subset_data = HistoricalData(subset_prices)
         allocations = member.allocations()
         backtester = PortfolioBacktester(
-            data=subset_data, allocations=allocations, initial_cash=self.config.initial_cash
+            data=self.data, allocations=allocations, initial_cash=self.config.initial_cash
         )
         result = backtester.run(start_index=self._backtest_start_index)
         final_equity = result.final_equity
         final_cash = result.final_cash
         cash_gain = final_cash - self.config.initial_cash
         percent_gain = (cash_gain / self.config.initial_cash) * 100.0
+        equity_gain = final_equity - self.config.initial_cash
+        equity_percent_gain = (equity_gain / self.config.initial_cash) * 100.0
         total_complexity = sum(asset.formula.complexity() for asset in member.assets)
         complexity_penalty = self._complexity_penalty(total_complexity)
-        score = final_cash - complexity_penalty
+        score = final_equity - complexity_penalty
         return MemberPerformance(
             member=member,
             final_cash=final_cash,
             cash_percent_gain=percent_gain,
             final_equity=final_equity,
+            equity_percent_gain=equity_percent_gain,
             backtest=result,
             complexity=total_complexity,
             complexity_penalty=complexity_penalty,
             score=score,
         )
+
+    def _evaluate_population(
+        self, population: List[PortfolioMember]
+    ) -> List[MemberPerformance]:
+        if not population:
+            return []
+        worker_count = min(len(population), os.cpu_count() or 1)
+        if worker_count <= 1:
+            return [self._evaluate_member(member) for member in population]
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            return list(executor.map(self._evaluate_member, population))
 
     def _compute_population_metrics(
         self, performances: List[MemberPerformance], generation: int
@@ -294,32 +310,34 @@ class EvolutionEngine:
         if not performances:
             return PopulationMetrics(
                 generation=generation,
-                top_final_cash=0.0,
-                top10_mean_final_cash=0.0,
-                top20_mean_final_cash=0.0,
-                average_final_cash=0.0,
-                top_cash_percent_gain=0.0,
-                average_cash_percent_gain=0.0,
+                top_final_equity=0.0,
+                top10_mean_final_equity=0.0,
+                top20_mean_final_equity=0.0,
+                average_final_equity=0.0,
+                top_equity_percent_gain=0.0,
+                average_equity_percent_gain=0.0,
             )
 
-        sorted_by_cash = sorted(performances, key=lambda p: p.final_cash, reverse=True)
+        sorted_by_equity = sorted(performances, key=lambda p: p.final_equity, reverse=True)
 
-        def mean_cash_for_fraction(fraction: float) -> float:
-            count = max(1, int(round(len(sorted_by_cash) * fraction)))
-            count = min(count, len(sorted_by_cash))
-            selected = sorted_by_cash[:count]
-            return sum(p.final_cash for p in selected) / len(selected)
+        def mean_equity_for_fraction(fraction: float) -> float:
+            count = max(1, int(round(len(sorted_by_equity) * fraction)))
+            count = min(count, len(sorted_by_equity))
+            selected = sorted_by_equity[:count]
+            return sum(p.final_equity for p in selected) / len(selected)
 
-        average_cash = sum(p.final_cash for p in performances) / len(performances)
-        average_percent_gain = sum(p.cash_percent_gain for p in performances) / len(performances)
+        average_equity = sum(p.final_equity for p in performances) / len(performances)
+        average_percent_gain = (
+            sum(p.equity_percent_gain for p in performances) / len(performances)
+        )
         return PopulationMetrics(
             generation=generation,
-            top_final_cash=sorted_by_cash[0].final_cash,
-            top10_mean_final_cash=mean_cash_for_fraction(0.1),
-            top20_mean_final_cash=mean_cash_for_fraction(0.2),
-            average_final_cash=average_cash,
-            top_cash_percent_gain=sorted_by_cash[0].cash_percent_gain,
-            average_cash_percent_gain=average_percent_gain,
+            top_final_equity=sorted_by_equity[0].final_equity,
+            top10_mean_final_equity=mean_equity_for_fraction(0.1),
+            top20_mean_final_equity=mean_equity_for_fraction(0.2),
+            average_final_equity=average_equity,
+            top_equity_percent_gain=sorted_by_equity[0].equity_percent_gain,
+            average_equity_percent_gain=average_percent_gain,
         )
 
     def _complexity_penalty(self, complexity: int) -> float:
