@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from typing import List, Sequence
@@ -147,7 +148,9 @@ class EvolutionEngine:
         self, population: List[PortfolioMember], generation: int = 0
     ) -> tuple[List[PortfolioMember], GenerationReport]:
         performances = [self._evaluate_member(member) for member in population]
-        sorted_performances = sorted(performances, key=lambda p: p.percent_gain, reverse=True)
+        sorted_performances = sorted(
+            performances, key=lambda performance: performance.percent_gain, reverse=True
+        )
         metrics = self._compute_population_metrics(sorted_performances, generation)
         survivors = self._select_survivors(sorted_performances)
         new_population = self._repopulate(sorted_performances, survivors)
@@ -242,62 +245,81 @@ class EvolutionEngine:
         if count == 0:
             return []
 
-        bottom_count = max(1, int(round(count * self.config.bottom_death_fraction)))
-        if bottom_count >= count:
-            bottom_count = count - 1
-        cutoff = max(0, count - bottom_count)
-        survivors = [perf.member for perf in performances[:cutoff]]
-        return survivors
+        top_count = max(1, math.ceil(count * self.config.top_survivor_fraction))
+        bottom_count = max(1, math.ceil(count * self.config.bottom_death_fraction))
+
+        if top_count + bottom_count > count:
+            bottom_count = max(0, count - top_count)
+
+        target_removals = max(bottom_count, int(round(count * 0.5)))
+        target_removals = min(target_removals, count - top_count)
+        survivors_target = count - target_removals
+
+        top_survivors = performances[:top_count]
+        middle_end = count - bottom_count
+        middle_segment = performances[top_count:middle_end]
+        additional_removals = max(0, target_removals - bottom_count)
+        middle_survivor_count = max(0, len(middle_segment) - additional_removals)
+        middle_survivors = middle_segment[:middle_survivor_count]
+
+        selected = top_survivors + middle_survivors
+        if len(selected) > survivors_target:
+            selected = selected[:survivors_target]
+        return [perf.member for perf in selected]
 
     def _repopulate(
         self,
         performances: List[MemberPerformance],
         survivors: List[PortfolioMember],
     ) -> List[PortfolioMember]:
-        new_population: List[PortfolioMember] = list(survivors)
+        new_population: List[PortfolioMember] = []
 
-        if not performances:
+        if not performances or not survivors:
             while len(new_population) < self.config.population_size:
                 new_population.append(self._create_initial_member())
             return new_population
 
-        top_count = max(1, int(round(len(performances) * self.config.top_survivor_fraction)))
-        top_count = min(top_count, len(performances))
-        parents = [performances[i].member for i in range(top_count)] or survivors
+        for survivor in survivors:
+            if len(new_population) >= self.config.population_size:
+                break
+            new_population.append(survivor)
+            if len(new_population) >= self.config.population_size:
+                break
+            clone = survivor.clone()
+            mutated_clone = self._mutate_clone(clone)
+            new_population.append(mutated_clone)
 
         while len(new_population) < self.config.population_size:
-            if parents:
-                parent = self.rng.choice(parents)
-            elif survivors:
-                parent = self.rng.choice(survivors)
-            else:
-                new_population.append(self._create_initial_member())
-                continue
-            child = self._mutate_member(parent)
-            new_population.append(child)
+            parent = self.rng.choice(survivors)
+            clone = parent.clone()
+            mutated_clone = self._mutate_clone(clone)
+            new_population.append(mutated_clone)
 
         return new_population[: self.config.population_size]
 
     def _mutate_member(self, parent: PortfolioMember) -> PortfolioMember:
         child = parent.clone()
-        if not child.assets:
+        return self._mutate_clone(child)
+
+    def _mutate_clone(self, clone: PortfolioMember) -> PortfolioMember:
+        if not clone.assets:
             return self._create_initial_member()
 
         action = self.rng.random()
         if action < 0.4:
-            asset = self.rng.choice(child.assets)
+            asset = self.rng.choice(clone.assets)
             asset.formula = self.factory.mutate(asset.formula)
         elif action < 0.7:
-            asset = self.rng.choice(child.assets)
+            asset = self.rng.choice(clone.assets)
             scale = self.rng.uniform(0.8, 1.2)
             asset.weight = max(0.05, round(asset.weight * scale, 3))
         elif action < 0.85:
-            self._add_random_asset(child)
+            self._add_random_asset(clone)
         else:
-            self._remove_random_asset(child)
+            self._remove_random_asset(clone)
 
-        self._ensure_min_requirements(child)
-        return child
+        self._ensure_min_requirements(clone)
+        return clone
 
     def _add_random_asset(self, member: PortfolioMember) -> bool:
         existing = set(member.tickers())
