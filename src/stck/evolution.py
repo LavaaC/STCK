@@ -289,52 +289,63 @@ class EvolutionEngine:
                 middle_strategy="No members available; repopulating from scratch.",
             )
 
-        culled_target = math.ceil(count / 2)
         top_target = max(1, math.ceil(count * self.config.top_survivor_fraction))
         bottom_target = max(1, math.ceil(count * self.config.bottom_death_fraction))
+        kill_target = max(bottom_target, math.ceil(count * 0.5))
 
         if top_target + bottom_target > count:
             bottom_target = max(0, count - top_target)
 
-        culled_target = max(culled_target, bottom_target)
-        survivor_target = max(0, count - culled_target)
+        kill_target = min(count, max(kill_target, bottom_target))
 
-        if survivor_target < top_target:
-            survivor_target = top_target
-            culled_target = max(0, count - survivor_target)
+        top_indices = list(range(min(top_target, count)))
+        bottom_indices = list(range(max(0, count - bottom_target), count))
 
-        middle_start = min(top_target, count)
-        middle_end = max(middle_start, count - bottom_target)
-        top_segment = performances[:middle_start]
-        middle_segment = performances[middle_start:middle_end]
+        middle_start = len(top_indices)
+        middle_end = max(middle_start, count - len(bottom_indices))
+        middle_indices = list(range(middle_start, middle_end))
 
-        survivors: List[PortfolioMember] = [perf.member for perf in top_segment]
-        survivors_needed = max(0, survivor_target - len(survivors))
-        survivors.extend(perf.member for perf in middle_segment[:survivors_needed])
+        kills_needed = max(0, kill_target - len(bottom_indices))
+        kills_from_middle: List[int] = []
 
-        actual_survivor_count = len(survivors)
-        bottom_culled = count - middle_end
-        middle_culled = len(middle_segment) - max(0, survivor_target - len(top_segment))
-        if middle_culled < 0:
-            middle_culled = 0
+        if middle_indices and kills_needed > 0:
+            weighted_pool = [
+                (idx, (idx - middle_start + 1)) for idx in middle_indices
+            ]
+            available = list(weighted_pool)
+            while available and len(kills_from_middle) < kills_needed:
+                total_weight = sum(weight for _, weight in available)
+                pick = self.rng.uniform(0, total_weight)
+                cumulative = 0.0
+                chosen_index = None
+                for i, (candidate, weight) in enumerate(available):
+                    cumulative += weight
+                    if pick <= cumulative:
+                        chosen_index = i
+                        break
+                if chosen_index is None:
+                    chosen_index = len(available) - 1
+                candidate, _ = available.pop(chosen_index)
+                kills_from_middle.append(candidate)
 
-        if actual_survivor_count == 0:
-            middle_strategy = "All members were culled; survivors will be regenerated."
-        else:
-            protected = min(len(top_segment), actual_survivor_count)
-            middle_strategy = (
-                "Protected top {protected} performers, culled {bottom} from the bottom tier, "
-                "and trimmed {middle} from the middle cohort to enforce a 50% cull."
-            ).format(
-                protected=protected,
-                bottom=bottom_culled,
-                middle=max(0, middle_culled),
-            )
+        kill_set = set(bottom_indices + kills_from_middle)
+        survivors: List[PortfolioMember] = [
+            performances[i].member for i in range(count) if i not in kill_set
+        ]
+
+        middle_strategy = (
+            "Protected top {protected} performers, culled {bottom} from the bottom tier, "
+            "and removed {middle} additional members from the middle with weighted odds."
+        ).format(
+            protected=len(top_indices),
+            bottom=len(bottom_indices),
+            middle=len(kills_from_middle),
+        )
 
         return _SelectionOutcome(
             survivors=survivors,
-            top_preserved_count=min(len(top_segment), actual_survivor_count),
-            bottom_culled_count=max(0, bottom_culled),
+            top_preserved_count=min(len(top_indices), len(survivors)),
+            bottom_culled_count=len(bottom_indices),
             middle_strategy=middle_strategy,
         )
 
@@ -346,14 +357,6 @@ class EvolutionEngine:
         new_population: List[PortfolioMember] = list(survivors)
         clones_created = 0
 
-        if self._elite_member is not None and self._elite_signature is not None:
-            elite_signature = self._elite_signature
-            already_present = any(
-                self._member_signature(member) == elite_signature for member in new_population
-            )
-            if not already_present:
-                new_population.insert(0, self._elite_member.clone())
-
         if not performances and not survivors:
             while len(new_population) < self.config.population_size:
                 new_population.append(self._create_initial_member())
@@ -364,34 +367,33 @@ class EvolutionEngine:
             top_seed = max(1, min(len(performances), self.config.population_size))
             parents = [performances[i].member for i in range(top_seed)]
 
-        for survivor in survivors:
-            if len(new_population) >= self.config.population_size:
-                break
-            if self._elite_signature is not None and (
-                self._member_signature(survivor) == self._elite_signature
-            ):
-                continue
+        initial_clones: List[PortfolioMember] = []
+        for survivor in parents:
             child = self._mutate_member(survivor)
-            new_population.append(child)
-            clones_created += 1
+            initial_clones.append(child)
+        clones_created += len(initial_clones)
+        new_population.extend(initial_clones)
+
+        if (
+            self._elite_member is not None
+            and self._elite_signature is not None
+            and len(new_population) < self.config.population_size
+        ):
+            elite_signature = self._elite_signature
+            already_present = any(
+                self._member_signature(member) == elite_signature for member in new_population
+            )
+            if not already_present:
+                new_population.insert(0, self._elite_member.clone())
 
         while len(new_population) < self.config.population_size:
-            if not parents:
-                new_population.append(self._create_initial_member())
-                continue
-            if self._elite_signature is not None:
-                eligible_parents = [
-                    parent
-                    for parent in parents
-                    if self._member_signature(parent) != self._elite_signature
-                ]
+            if parents:
+                parent = self.rng.choice(parents)
+                child = self._mutate_member(parent)
+                new_population.append(child)
+                clones_created += 1
             else:
-                eligible_parents = parents
-            pool = eligible_parents or parents
-            parent = self.rng.choice(pool)
-            child = self._mutate_member(parent)
-            new_population.append(child)
-            clones_created += 1
+                new_population.append(self._create_initial_member())
 
         return new_population[: self.config.population_size], clones_created
 
