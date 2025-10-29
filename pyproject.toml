@@ -11,7 +11,13 @@ authors = [
     {name = "STCK Team"}
 ]
 readme = "README.md"
-dependencies = []
+dependencies = [
+    "pandas>=1.5",
+    "yfinance>=0.2",
+]
+
+[project.scripts]
+stck-run = "stck.main:main"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
