@@ -29,7 +29,14 @@ class EvolutionConfig:
     formula_mutation_chance: float = 0.75
     formula_mutation_attempts: int = 2
     weight_mutation_chance: float = 0.6
-    asset_mutation_chance: float = 0.55
+    asset_mutation_chance: float = 0.65
+    backtest_years: int = 5
+    trading_days_per_year: int = 252
+    target_ticker_low: int = 12
+    target_ticker_high: int = 13
+    max_formula_complexity: int = 28
+    complexity_target: int = 18
+    complexity_penalty_per_node: float = 100.0
 
 
 @dataclass
@@ -93,19 +100,24 @@ def format_member_portfolio(member: PortfolioMember) -> List[str]:
 @dataclass
 class MemberPerformance:
     member: PortfolioMember
+    final_cash: float
+    cash_percent_gain: float
     final_equity: float
-    percent_gain: float
-    max_drawdown: float
     backtest: BacktestResult
+    complexity: int
+    complexity_penalty: float
+    score: float
 
 
 @dataclass
 class PopulationMetrics:
     generation: int
-    top_percent_gain: float
-    top10_mean_percent: float
-    top20_mean_percent: float
-    average_percent_gain: float
+    top_final_cash: float
+    top10_mean_final_cash: float
+    top20_mean_final_cash: float
+    average_final_cash: float
+    top_cash_percent_gain: float
+    average_cash_percent_gain: float
 
 
 @dataclass
@@ -155,6 +167,11 @@ class EvolutionEngine:
             window_count_range=self.config.window_count_range,
             data_length=len(self.data),
         )
+        self._backtest_length = min(
+            len(self.data),
+            max(1, self.config.backtest_years * self.config.trading_days_per_year),
+        )
+        self._backtest_start_index = max(0, len(self.data) - self._backtest_length)
         self._etf_universe = set(POPULAR_ETFS)
         self.available_tickers: List[str] = []
         self.available_etfs: List[str] = []
@@ -181,8 +198,10 @@ class EvolutionEngine:
         self, population: List[PortfolioMember], generation: int = 0
     ) -> tuple[List[PortfolioMember], GenerationReport]:
         performances = [self._evaluate_member(member) for member in population]
-        sorted_performances = sorted(performances, key=lambda p: p.percent_gain, reverse=True)
-        metrics = self._compute_population_metrics(sorted_performances, generation)
+        sorted_performances = sorted(
+            performances, key=lambda p: (p.score, p.final_cash), reverse=True
+        )
+        metrics = self._compute_population_metrics(performances, generation)
         selection = self._select_survivors(sorted_performances)
         new_population, clones_created = self._repopulate(
             sorted_performances, selection.survivors
@@ -228,6 +247,9 @@ class EvolutionEngine:
 
     def _create_asset(self, ticker: str, *, is_etf: bool) -> MemberAsset:
         formula = self.factory.create(priority=0)
+        formula = self.factory.clamp_complexity(
+            formula, self.config.max_formula_complexity
+        )
         weight = self._random_weight()
         return MemberAsset(ticker=ticker, formula=formula, weight=weight, is_etf=is_etf)
 
@@ -247,15 +269,23 @@ class EvolutionEngine:
         backtester = PortfolioBacktester(
             data=subset_data, allocations=allocations, initial_cash=self.config.initial_cash
         )
-        result = backtester.run()
+        result = backtester.run(start_index=self._backtest_start_index)
         final_equity = result.final_equity
-        percent_gain = (final_equity - self.config.initial_cash) / self.config.initial_cash * 100.0
+        final_cash = result.final_cash
+        cash_gain = final_cash - self.config.initial_cash
+        percent_gain = (cash_gain / self.config.initial_cash) * 100.0
+        total_complexity = sum(asset.formula.complexity() for asset in member.assets)
+        complexity_penalty = self._complexity_penalty(total_complexity)
+        score = final_cash - complexity_penalty
         return MemberPerformance(
             member=member,
+            final_cash=final_cash,
+            cash_percent_gain=percent_gain,
             final_equity=final_equity,
-            percent_gain=percent_gain,
-            max_drawdown=result.max_drawdown(),
             backtest=result,
+            complexity=total_complexity,
+            complexity_penalty=complexity_penalty,
+            score=score,
         )
 
     def _compute_population_metrics(
@@ -264,26 +294,39 @@ class EvolutionEngine:
         if not performances:
             return PopulationMetrics(
                 generation=generation,
-                top_percent_gain=0.0,
-                top10_mean_percent=0.0,
-                top20_mean_percent=0.0,
-                average_percent_gain=0.0,
+                top_final_cash=0.0,
+                top10_mean_final_cash=0.0,
+                top20_mean_final_cash=0.0,
+                average_final_cash=0.0,
+                top_cash_percent_gain=0.0,
+                average_cash_percent_gain=0.0,
             )
 
-        def mean_for_fraction(fraction: float) -> float:
-            count = max(1, int(round(len(performances) * fraction)))
-            count = min(count, len(performances))
-            selected = performances[:count]
-            return sum(p.percent_gain for p in selected) / len(selected)
+        sorted_by_cash = sorted(performances, key=lambda p: p.final_cash, reverse=True)
 
-        average_percent = sum(p.percent_gain for p in performances) / len(performances)
+        def mean_cash_for_fraction(fraction: float) -> float:
+            count = max(1, int(round(len(sorted_by_cash) * fraction)))
+            count = min(count, len(sorted_by_cash))
+            selected = sorted_by_cash[:count]
+            return sum(p.final_cash for p in selected) / len(selected)
+
+        average_cash = sum(p.final_cash for p in performances) / len(performances)
+        average_percent_gain = sum(p.cash_percent_gain for p in performances) / len(performances)
         return PopulationMetrics(
             generation=generation,
-            top_percent_gain=performances[0].percent_gain,
-            top10_mean_percent=mean_for_fraction(0.1),
-            top20_mean_percent=mean_for_fraction(0.2),
-            average_percent_gain=average_percent,
+            top_final_cash=sorted_by_cash[0].final_cash,
+            top10_mean_final_cash=mean_cash_for_fraction(0.1),
+            top20_mean_final_cash=mean_cash_for_fraction(0.2),
+            average_final_cash=average_cash,
+            top_cash_percent_gain=sorted_by_cash[0].cash_percent_gain,
+            average_cash_percent_gain=average_percent_gain,
         )
+
+    def _complexity_penalty(self, complexity: int) -> float:
+        if self.config.complexity_penalty_per_node <= 0:
+            return 0.0
+        excess = max(0, complexity - self.config.complexity_target)
+        return excess * self.config.complexity_penalty_per_node
 
     def _select_survivors(self, performances: List[MemberPerformance]) -> _SelectionOutcome:
         count = len(performances)
@@ -409,6 +452,10 @@ class EvolutionEngine:
             for asset in member.assets
         )
 
+    def _mutate_formula(self, formula: TradingFormula) -> TradingFormula:
+        mutated = self.factory.mutate(formula)
+        return self.factory.clamp_complexity(mutated, self.config.max_formula_complexity)
+
     def _mutate_member(self, parent: PortfolioMember) -> PortfolioMember:
         child = parent.clone()
         if not child.assets:
@@ -419,7 +466,7 @@ class EvolutionEngine:
         for _ in range(self.config.formula_mutation_attempts):
             if child.assets and self.rng.random() < self.config.formula_mutation_chance:
                 asset = self.rng.choice(child.assets)
-                asset.formula = self.factory.mutate(asset.formula)
+                asset.formula = self._mutate_formula(asset.formula)
                 mutated = True
 
         if child.assets and self.rng.random() < self.config.weight_mutation_chance:
@@ -430,9 +477,25 @@ class EvolutionEngine:
 
         if self.rng.random() < self.config.asset_mutation_chance:
             change_performed = False
-            add_first = not child.assets or self.rng.random() < 0.55
+            ticker_count = child.ticker_count()
+            if ticker_count < self.config.target_ticker_low:
+                add_bias = 0.9
+            elif ticker_count > self.config.target_ticker_high:
+                add_bias = 0.25
+            else:
+                add_bias = 0.5
+            add_first = not child.assets or self.rng.random() < add_bias
             if add_first:
                 change_performed = self._add_random_asset(child)
+                if (
+                    change_performed
+                    and child.ticker_count() < self.config.target_ticker_low
+                    and self.rng.random() < 0.35
+                ):
+                    # Occasionally add a second asset to increase diversification.
+                    change_performed = (
+                        self._add_random_asset(child) or change_performed
+                    )
                 if not change_performed:
                     change_performed = self._remove_random_asset(child)
             else:
@@ -443,7 +506,7 @@ class EvolutionEngine:
 
         if not mutated and child.assets:
             asset = self.rng.choice(child.assets)
-            asset.formula = self.factory.mutate(asset.formula)
+            asset.formula = self._mutate_formula(asset.formula)
 
         self._ensure_min_requirements(child)
         return child

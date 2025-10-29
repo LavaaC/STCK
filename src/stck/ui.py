@@ -60,12 +60,12 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
 
     lines = [
         f"Generation {report.generation + 1}",
-        f"Top percent gain: {metrics.top_percent_gain:.2f}%",
-        f"Top 10% average gain: {metrics.top10_mean_percent:.2f}%",
-        f"Top 20% average gain: {metrics.top20_mean_percent:.2f}%",
-        f"Population average gain: {metrics.average_percent_gain:.2f}%",
-        f"Best member final equity: {best.final_equity:,.2f}",
-        f"Best member percent gain: {best.percent_gain:.2f}%",
+        f"Top final cash: {metrics.top_final_cash:,.2f}",
+        f"Top 10% average cash: {metrics.top10_mean_final_cash:,.2f}",
+        f"Top 20% average cash: {metrics.top20_mean_final_cash:,.2f}",
+        f"Population average cash: {metrics.average_final_cash:,.2f}",
+        f"Best member final cash: {best.final_cash:,.2f}",
+        f"Best member cash gain: {best.cash_percent_gain:.2f}%",
     ]
 
     if report.transition is not None:
@@ -94,10 +94,14 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
             ]
         )
 
-    lines.extend(["", "Top performers (sorted by gain):"])
+    lines.extend(["", "Top performers (sorted by final cash):"])
     for idx, performance in enumerate(report.performances[:5], start=1):
         lines.append(
-            f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
+            (
+                f"  #{idx}: Final cash {performance.final_cash:,.2f} | "
+                f"Cash gain {performance.cash_percent_gain:.2f}% | "
+                f"Final equity {performance.final_equity:,.2f}"
+            )
         )
     if len(report.performances) > 5:
         lines.append(
@@ -261,17 +265,17 @@ class EvolutionConsoleUI:
             return
 
         generations = [m.generation + 1 for m in self.history]
-        top_values = [m.top_percent_gain for m in self.history]
-        top10_values = [m.top10_mean_percent for m in self.history]
-        top20_values = [m.top20_mean_percent for m in self.history]
+        top_values = [m.top_final_cash for m in self.history]
+        top10_values = [m.top10_mean_final_cash for m in self.history]
+        top20_values = [m.top20_mean_final_cash for m in self.history]
 
         plt.figure(figsize=(8, 4.5))
         plt.plot(generations, top_values, label="Top Member")
         plt.plot(generations, top10_values, label="Top 10% Avg")
         plt.plot(generations, top20_values, label="Top 20% Avg")
         plt.xlabel("Generation")
-        plt.ylabel("Percent Gain (%)")
-        plt.title("Evolution Performance by Generation")
+        plt.ylabel("Final Cash")
+        plt.title("Evolution Final Cash by Generation")
         plt.legend()
         plt.tight_layout()
 
@@ -318,7 +322,7 @@ class EvolutionTkUI:
         self._pause_event.set()
         self._report_queue: queue.Queue[GenerationReport | None] = queue.Queue()
         self._latest_report: GenerationReport | None = None
-        self._equity_points: List[tuple[int, float, float]] = []
+        self._cash_points: List[tuple[int, float, float]] = []
         self._detail_window: tk.Toplevel | None = None
         self._detail_text: tk.Text | None = None
         self._chart_window: tk.Toplevel | None = None
@@ -328,11 +332,18 @@ class EvolutionTkUI:
         self._line_top = None
         self._line_avg = None
         self._plot_enabled = False
+        self._top_stock_window: tk.Toplevel | None = None
+        self._top_stock_canvas = None
+        self._top_stock_figure = None
+        self._top_stock_axes = None
+        self._top_stock_label_var: tk.StringVar | None = None
+        self._top_stock_enabled = False
 
         self.root = tk.Tk()
         self.root.title("STCK Evolution Monitor")
         self.root.configure(padx=12, pady=12)
         self.status_text = tk.StringVar()
+        self._top_stock_label_var = tk.StringVar(value="Top stock data unavailable.")
         self.status_label = tk.Label(
             self.root,
             textvariable=self.status_text,
@@ -364,6 +375,12 @@ class EvolutionTkUI:
             command=self._ensure_chart_window,
         )
         self.chart_button.pack(side="left", padx=(8, 0))
+        self.top_stock_button = tk.Button(
+            controls,
+            text="Top stock charts",
+            command=self._show_top_stock_charts,
+        )
+        self.top_stock_button.pack(side="left", padx=(8, 0))
 
         self._ensure_chart_window()
         message = "Initializing simulation..."
@@ -419,6 +436,82 @@ class EvolutionTkUI:
         if self._plot_enabled:
             self._update_plot()
 
+    def _show_top_stock_charts(self) -> None:
+        if self._latest_report is None:
+            self.status_text.set(
+                self.status_text.get() + "\nTop stock data is not available yet."
+            )
+            return
+        self._ensure_top_stock_window()
+        self._update_top_stock_charts()
+
+    def _ensure_top_stock_window(self) -> None:
+        if tk is None:
+            return
+        if (
+            self._top_stock_enabled
+            and self._top_stock_window is not None
+            and self._top_stock_window.winfo_exists()
+        ):
+            self._top_stock_window.deiconify()
+            self._top_stock_window.lift()
+            return
+        self._top_stock_enabled = self._init_top_stock_window()
+
+    def _init_top_stock_window(self) -> bool:
+        try:  # pragma: no cover - optional dependency
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+        except ImportError:  # pragma: no cover - optional dependency
+            self._top_stock_window = None
+            self._top_stock_canvas = None
+            self._top_stock_figure = None
+            self._top_stock_axes = None
+            if self.status_text is not None:
+                self.status_text.set(
+                    self.status_text.get()
+                    + "\nInstall matplotlib to view top stock charts."
+                )
+            return False
+
+        if self._top_stock_window is not None and self._top_stock_window.winfo_exists():
+            self._top_stock_window.destroy()
+
+        self._top_stock_figure = Figure(figsize=(7, 5), dpi=100)
+        ax_equity = self._top_stock_figure.add_subplot(211)
+        ax_alloc = self._top_stock_figure.add_subplot(212)
+        ax_equity.set_title("Total portfolio value (5-year window)")
+        ax_equity.set_xlabel("Step")
+        ax_equity.set_ylabel("Value")
+        ax_alloc.set_title("Portfolio allocation percentages")
+        ax_alloc.set_xlabel("Step")
+        ax_alloc.set_ylabel("Allocation %")
+        self._top_stock_axes = (ax_equity, ax_alloc)
+
+        self._top_stock_window = tk.Toplevel(self.root)
+        self._top_stock_window.title("Top stock overview")
+        self._top_stock_window.geometry("720x520")
+        self._top_stock_window.protocol("WM_DELETE_WINDOW", self._on_top_stock_close)
+
+        label = tk.Label(
+            self._top_stock_window,
+            textvariable=self._top_stock_label_var,
+            anchor="w",
+            justify="left",
+            font=("Courier", 10),
+            padx=8,
+            pady=4,
+        )
+        label.pack(fill="x", expand=False)
+
+        self._top_stock_canvas = FigureCanvasTkAgg(
+            self._top_stock_figure, master=self._top_stock_window
+        )
+        widget = self._top_stock_canvas.get_tk_widget()
+        widget.pack(fill="both", expand=True, padx=8, pady=8)
+        self._top_stock_canvas.draw()
+        return True
+
     def _init_chart(self) -> bool:
         try:  # pragma: no cover - optional dependency
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -437,11 +530,11 @@ class EvolutionTkUI:
 
         self._figure = Figure(figsize=(7, 3.5), dpi=100)
         self._axis = self._figure.add_subplot(111)
-        self._axis.set_title("Top percent gain by generation")
+        self._axis.set_title("Top final cash by generation")
         self._axis.set_xlabel("Generation")
-        self._axis.set_ylabel("Percent gain (%)")
-        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top gain")
-        (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg")
+        self._axis.set_ylabel("Final cash")
+        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top cash")
+        (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg cash")
         self._axis.legend(loc="upper left")
 
         self._chart_window = tk.Toplevel(self.root)
@@ -514,13 +607,19 @@ class EvolutionTkUI:
         for idx, performance in enumerate(report.performances[:5], start=1):
             lines.append(
                 (
-                    f"#{idx}: Gain {performance.percent_gain:.2f}% | Final Equity "
-                    f"{performance.final_equity:,.2f}"
+                    f"#{idx}: Final cash {performance.final_cash:,.2f} | "
+                    f"Cash gain {performance.cash_percent_gain:.2f}% | "
+                    f"Final equity {performance.final_equity:,.2f}"
                 )
             )
-            drawdown_pct = performance.max_drawdown * 100.0
-            lines.append(f"    Max drawdown: {drawdown_pct:.2f}%")
             result = performance.backtest
+            lines.append(
+                (
+                    "    Score: "
+                    f"{performance.score:,.2f} | Complexity: {performance.complexity} | "
+                    f"Penalty: {performance.complexity_penalty:,.2f}"
+                )
+            )
             if result.cash_curve:
                 final_cash = result.cash_curve[-1]
                 min_cash = min(result.cash_curve)
@@ -532,14 +631,8 @@ class EvolutionTkUI:
                     )
                 )
             if result.equity_curve:
-                starting_equity = result.equity_curve[0]
-                peak_equity = max(result.equity_curve)
-                lines.append(
-                    (
-                        f"    Equity start: {starting_equity:,.2f} | "
-                        f"Peak: {peak_equity:,.2f}"
-                    )
-                )
+                final_equity = result.equity_curve[-1]
+                lines.append(f"    Final equity: {final_equity:,.2f}")
             if idx == 1:
                 lines.append("    Holdings:")
                 holdings = format_member_portfolio(performance.member)
@@ -583,8 +676,9 @@ class EvolutionTkUI:
                 self._latest_report = report
                 self.status_text.set(self._format_report(report))
                 self._refresh_detail_window()
-                self._record_equity(report)
+                self._record_cash(report)
                 self._update_plot()
+                self._update_top_stock_charts()
         except queue.Empty:
             pass
         if not self._stop_event.is_set():
@@ -599,27 +693,81 @@ class EvolutionTkUI:
             lines[0] = lines[0].replace("Generation ", "Generation: ")
         return "\n".join(lines)
 
-    def _record_equity(self, report: GenerationReport) -> None:
+    def _record_cash(self, report: GenerationReport) -> None:
         metrics = report.metrics
-        self._equity_points.append(
+        self._cash_points.append(
             (
                 report.generation + 1,
-                metrics.top_percent_gain,
-                metrics.average_percent_gain,
+                metrics.top_final_cash,
+                metrics.average_final_cash,
             )
         )
 
     def _update_plot(self) -> None:
         if not self._plot_enabled or self._canvas is None or self._axis is None:
             return
-        xs = [point[0] for point in self._equity_points]
-        top_values = [point[1] for point in self._equity_points]
-        average_values = [point[2] for point in self._equity_points]
+        xs = [point[0] for point in self._cash_points]
+        top_values = [point[1] for point in self._cash_points]
+        average_values = [point[2] for point in self._cash_points]
         self._line_top.set_data(xs, top_values)
         self._line_avg.set_data(xs, average_values)
         self._axis.relim()
         self._axis.autoscale_view()
         self._canvas.draw_idle()
+
+    def _update_top_stock_charts(self) -> None:
+        if (
+            not self._top_stock_enabled
+            or self._top_stock_canvas is None
+            or self._top_stock_axes is None
+            or self._top_stock_label_var is None
+        ):
+            return
+        report = self._latest_report
+        if report is None or report.best_member is None:
+            self._top_stock_label_var.set("Top stock data unavailable.")
+            return
+        result = report.best_member.backtest
+        if not result.equity_curve:
+            self._top_stock_label_var.set("Top stock data unavailable.")
+            return
+
+        ax_equity, ax_alloc = self._top_stock_axes
+        ax_equity.clear()
+        ax_alloc.clear()
+        xs = list(range(len(result.equity_curve)))
+        ax_equity.set_title("Total portfolio value (5-year window)")
+        ax_equity.set_xlabel("Step")
+        ax_equity.set_ylabel("Value")
+        ax_equity.plot(xs, result.equity_curve, label="Equity", color="#1f77b4")
+        ax_equity.plot(xs, result.cash_curve, label="Cash", color="#ff7f0e")
+        ax_equity.legend(loc="upper left")
+
+        ax_alloc.set_title("Portfolio allocation percentages")
+        ax_alloc.set_xlabel("Step")
+        ax_alloc.set_ylabel("Allocation %")
+        if result.value_percentages:
+            series = [
+                [step.get(ticker, 0.0) * 100.0 for step in result.value_percentages]
+                for ticker in result.tickers
+            ]
+            if any(any(values) for values in series):
+                ax_alloc.stackplot(xs, series, labels=result.tickers)
+                ax_alloc.set_ylim(0, 100)
+                ax_alloc.legend(loc="upper left", ncol=2, fontsize=8)
+        ax_alloc.margins(x=0)
+
+        top_stock = result.top_stock()
+        if top_stock is not None:
+            ticker, value = top_stock
+            percent = result.value_percentages[-1].get(ticker, 0.0) * 100.0
+            self._top_stock_label_var.set(
+                f"Top performing stock: {ticker} | Value {value:,.2f} | Share {percent:.2f}%"
+            )
+        else:
+            self._top_stock_label_var.set("Top performing stock: (no holdings)")
+
+        self._top_stock_canvas.draw_idle()
 
     def _on_close(self) -> None:
         self._stop_event.set()
@@ -628,6 +776,8 @@ class EvolutionTkUI:
             self._chart_window.destroy()
         if self._detail_window is not None and self._detail_window.winfo_exists():
             self._detail_window.destroy()
+        if self._top_stock_window is not None and self._top_stock_window.winfo_exists():
+            self._top_stock_window.destroy()
         self.root.destroy()
 
     def _on_chart_close(self) -> None:
@@ -640,3 +790,12 @@ class EvolutionTkUI:
         self._line_top = None
         self._line_avg = None
         self._plot_enabled = False
+
+    def _on_top_stock_close(self) -> None:
+        if self._top_stock_window is not None and self._top_stock_window.winfo_exists():
+            self._top_stock_window.destroy()
+        self._top_stock_window = None
+        self._top_stock_canvas = None
+        self._top_stock_figure = None
+        self._top_stock_axes = None
+        self._top_stock_enabled = False

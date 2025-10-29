@@ -30,7 +30,7 @@ def _normalize_ticker(ticker: str) -> str:
 def fetch_historical_data(
     tickers: Sequence[str],
     *,
-    years: int = 5,
+    years: int = 6,
     interval: str = "1d",
 ) -> DownloadResult:
     """Download adjusted close prices for ``tickers`` covering ``years`` years.
@@ -42,7 +42,7 @@ def fetch_historical_data(
         automatically translated to Yahoo Finance's dash notation to ensure
         Berkshire Hathaway style tickers resolve correctly.
     years:
-        Number of years of trailing data to request. Defaults to five years.
+        Number of years of trailing data to request. Defaults to six years.
     interval:
         Sampling interval passed directly to :func:`yfinance.download`.
 

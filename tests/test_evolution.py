@@ -33,8 +33,22 @@ def _default_config() -> EvolutionConfig:
     )
 
 
-def _dummy_backtest(equity: float) -> BacktestResult:
-    return BacktestResult(allocations=[], equity_curve=[equity], cash_curve=[0.0])
+def _dummy_backtest(equity: float, cash: float) -> BacktestResult:
+    holdings_value = max(0.0, equity - cash)
+    allocation = {"AAA": holdings_value, "CASH": cash}
+    percentages = {}
+    if equity > 0:
+        percentages = {ticker: value / equity for ticker, value in allocation.items()}
+    else:
+        percentages = {ticker: 0.0 for ticker in allocation}
+    return BacktestResult(
+        allocations=[],
+        equity_curve=[equity],
+        cash_curve=[cash],
+        value_breakdown=[allocation],
+        value_percentages=[percentages],
+        tickers=["AAA", "CASH"],
+    )
 
 
 def test_evolution_produces_reports() -> None:
@@ -50,10 +64,11 @@ def test_evolution_produces_reports() -> None:
 
     evolved, report = engine.evolve(population, generation=0)
     assert len(evolved) == engine.config.population_size
-    assert report.metrics.top_percent_gain >= report.metrics.top10_mean_percent
-    assert report.metrics.average_percent_gain <= report.metrics.top_percent_gain
+    assert report.metrics.top_final_cash >= report.metrics.top10_mean_final_cash
+    assert report.metrics.average_final_cash <= report.metrics.top_final_cash
     assert report.best_member is not None
     assert report.best_member.member.ticker_count() >= engine.config.min_tickers
+    assert report.best_member.score >= report.performances[-1].score
     assert report.transition is not None
     assert 0 <= report.transition.survivor_count <= engine.config.population_size
     assert report.transition.bottom_culled_count >= 0
@@ -74,7 +89,7 @@ def test_repopulate_keeps_survivors() -> None:
     engine = EvolutionEngine(data=data, config=_default_config(), rng=random.Random(11))
     population = engine.initialize_population(list(data.tickers))
     performances = [engine._evaluate_member(member) for member in population]  # type: ignore[attr-defined]
-    performances.sort(key=lambda p: p.percent_gain, reverse=True)
+    performances.sort(key=lambda p: (p.score, p.final_cash), reverse=True)
     selection = engine._select_survivors(performances)  # type: ignore[attr-defined]
     survivors = selection.survivors
     survivor_snapshots = [member.clone() for member in survivors]
@@ -132,28 +147,24 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
 
         assert outcome.bottom_culled_count == bottom_target
 
-    even_performances = [
-        MemberPerformance(
+    def _performance_with_gain(gain: float) -> MemberPerformance:
+        final_equity = engine.config.initial_cash * (1 + gain / 100.0)
+        final_cash = engine.config.initial_cash * (1 + gain / 100.0)
+        return MemberPerformance(
             member=PortfolioMember(),
-            final_equity=engine.config.initial_cash * (1 + gain / 100.0),
-            percent_gain=gain,
-            max_drawdown=0.0,
-            backtest=_dummy_backtest(engine.config.initial_cash * (1 + gain / 100.0)),
+            final_cash=final_cash,
+            cash_percent_gain=gain,
+            final_equity=final_equity,
+            backtest=_dummy_backtest(final_equity, final_cash),
+            complexity=0,
+            complexity_penalty=0.0,
+            score=final_cash,
         )
-        for gain in [60, 55, 50, 45, 40, 35]
-    ]
+
+    even_performances = [_performance_with_gain(gain) for gain in [60, 55, 50, 45, 40, 35]]
     assert_rules(even_performances)
 
-    odd_performances = [
-        MemberPerformance(
-            member=PortfolioMember(),
-            final_equity=engine.config.initial_cash * (1 + gain / 100.0),
-            percent_gain=gain,
-            max_drawdown=0.0,
-            backtest=_dummy_backtest(engine.config.initial_cash * (1 + gain / 100.0)),
-        )
-        for gain in [70, 60, 50, 40, 30]
-    ]
+    odd_performances = [_performance_with_gain(gain) for gain in [70, 60, 50, 40, 30]]
     assert_rules(odd_performances)
 
 
@@ -162,11 +173,27 @@ def test_best_equity_curve_never_regresses() -> None:
     engine = EvolutionEngine(data=data, config=_default_config(), rng=random.Random(19))
     population = engine.initialize_population(list(data.tickers))
 
-    best_equities: list[float] = []
+    best_scores: list[float] = []
     generations = 4
     for generation in range(generations):
         population, report = engine.evolve(population, generation=generation)
         assert report.best_member is not None
-        best_equities.append(report.best_member.final_equity)
+        best_scores.append(report.best_member.score)
 
-    assert best_equities == sorted(best_equities)
+    assert best_scores == sorted(best_scores)
+
+
+def test_formula_complexity_is_clamped() -> None:
+    data = _build_mock_data()
+    config = _default_config()
+    config.max_formula_complexity = 8
+    engine = EvolutionEngine(data=data, config=config, rng=random.Random(23))
+    population = engine.initialize_population(list(data.tickers))
+    for member in population:
+        for asset in member.assets:
+            assert asset.formula.complexity() <= config.max_formula_complexity
+
+    parent = population[0]
+    child = engine._mutate_member(parent)  # type: ignore[attr-defined]
+    for asset in child.assets:
+        assert asset.formula.complexity() <= config.max_formula_complexity

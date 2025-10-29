@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Protocol
+from typing import Callable, Dict, List, Protocol, Tuple, cast
 
 from .data import PriceHistory
 
@@ -120,6 +120,100 @@ class VolatilityNode:
 
     def describe(self) -> str:
         return f"vol({self.window})"
+
+
+@dataclass(frozen=True)
+class ExponentialMovingAverageNode:
+    window: int
+
+    def evaluate(self, history: PriceHistory) -> float:
+        return history.exponential_moving_average(self.window)
+
+    def clone(self) -> "ExponentialMovingAverageNode":
+        return ExponentialMovingAverageNode(window=self.window)
+
+    def mutate(self, rng: random.Random) -> "ExponentialMovingAverageNode":
+        delta = rng.choice([-3, -2, -1, 1, 2, 3])
+        new_window = max(1, self.window + delta)
+        return ExponentialMovingAverageNode(window=new_window)
+
+    def complexity(self) -> int:
+        return 1
+
+    def describe(self) -> str:
+        return f"ema({self.window})"
+
+
+@dataclass(frozen=True)
+class RSINode:
+    window: int
+
+    def evaluate(self, history: PriceHistory) -> float:
+        return history.relative_strength_index(self.window)
+
+    def clone(self) -> "RSINode":
+        return RSINode(window=self.window)
+
+    def mutate(self, rng: random.Random) -> "RSINode":
+        delta = rng.choice([-3, -2, -1, 1, 2, 3])
+        new_window = max(2, self.window + delta)
+        return RSINode(window=new_window)
+
+    def complexity(self) -> int:
+        return 1
+
+    def describe(self) -> str:
+        return f"rsi({self.window})"
+
+
+@dataclass(frozen=True)
+class MACDNode:
+    fast: int
+    slow: int
+
+    def evaluate(self, history: PriceHistory) -> float:
+        return history.macd(self.fast, self.slow)
+
+    def clone(self) -> "MACDNode":
+        return MACDNode(fast=self.fast, slow=self.slow)
+
+    def mutate(self, rng: random.Random) -> "MACDNode":
+        delta_fast = rng.choice([-2, -1, 1, 2])
+        delta_slow = rng.choice([-3, -2, -1, 1, 2, 3])
+        new_fast = max(1, self.fast + delta_fast)
+        new_slow = max(new_fast + 1, self.slow + delta_slow)
+        return MACDNode(fast=new_fast, slow=new_slow)
+
+    def complexity(self) -> int:
+        return 1
+
+    def describe(self) -> str:
+        return f"macd({self.fast}, {self.slow})"
+
+
+@dataclass(frozen=True)
+class BollingerBandwidthNode:
+    window: int
+    multiplier: float = 2.0
+
+    def evaluate(self, history: PriceHistory) -> float:
+        return history.bollinger_band_width(self.window, self.multiplier)
+
+    def clone(self) -> "BollingerBandwidthNode":
+        return BollingerBandwidthNode(window=self.window, multiplier=self.multiplier)
+
+    def mutate(self, rng: random.Random) -> "BollingerBandwidthNode":
+        delta = rng.choice([-3, -2, -1, 1, 2, 3])
+        new_window = max(2, self.window + delta)
+        multiplier_change = rng.choice([-0.5, -0.25, 0, 0.25, 0.5])
+        new_multiplier = max(0.5, round(self.multiplier + multiplier_change, 2))
+        return BollingerBandwidthNode(window=new_window, multiplier=new_multiplier)
+
+    def complexity(self) -> int:
+        return 1
+
+    def describe(self) -> str:
+        return f"bb_width({self.window}, x{self.multiplier:.2f})"
 
 
 # Arithmetic nodes ----------------------------------------------------------------
@@ -238,6 +332,10 @@ INDICATOR_FACTORIES: List[Callable[[random.Random], FormulaNode]] = [
     lambda rng: MovingAverageNode(window=rng.randint(2, 20)),
     lambda rng: MomentumNode(lookback=rng.randint(1, 20)),
     lambda rng: VolatilityNode(window=rng.randint(2, 20)),
+    lambda rng: ExponentialMovingAverageNode(window=rng.randint(2, 30)),
+    lambda rng: RSINode(window=rng.randint(5, 30)),
+    lambda rng: MACDNode(fast=rng.randint(3, 12), slow=rng.randint(13, 40)),
+    lambda rng: BollingerBandwidthNode(window=rng.randint(5, 30)),
 ]
 
 
@@ -327,3 +425,79 @@ class FormulaFactory:
             priority = formula.priority + delta
         windows = self._mutate_windows(list(formula.evaluation_windows))
         return TradingFormula(root=mutated_root, priority=priority, evaluation_windows=windows)
+
+    # Complexity management ----------------------------------------------------
+
+    def clamp_complexity(
+        self, formula: TradingFormula, max_complexity: int
+    ) -> TradingFormula:
+        if max_complexity <= 0:
+            return formula
+
+        trimmed_root = self._trim_root(formula.root.clone(), max_complexity)
+        return TradingFormula(
+            root=trimmed_root,
+            priority=formula.priority,
+            evaluation_windows=list(formula.evaluation_windows),
+        )
+
+    def _trim_root(self, root: FormulaNode, max_complexity: int) -> FormulaNode:
+        current = root
+        attempts = 0
+        # Keep pruning until the complexity budget is respected or efforts stall.
+        while current.complexity() > max_complexity and attempts < 64:
+            pruned = self._prune_once(current)
+            if pruned is current:
+                break
+            current = pruned
+            attempts += 1
+        return current
+
+    def _prune_once(self, root: FormulaNode) -> FormulaNode:
+        prunable: List[Tuple[str, FormulaNode, str | None]] = []
+        self._collect_prunable_nodes(root, prunable)
+        if not prunable:
+            return root
+
+        kind, target, side = self.rng.choice(prunable)
+        if kind == "unary":
+            unary_target = cast(UnaryNode, target)
+            replacement = unary_target.operand.clone()
+        else:
+            binary_target = cast(BinaryNode, target)
+            child = binary_target.left if side == "left" else binary_target.right
+            replacement = child.clone()
+
+        return self._replace_subtree(root, target, replacement)
+
+    def _collect_prunable_nodes(
+        self, node: FormulaNode, bucket: List[Tuple[str, FormulaNode, str | None]]
+    ) -> None:
+        if isinstance(node, UnaryNode):
+            bucket.append(("unary", node, None))
+            self._collect_prunable_nodes(node.operand, bucket)
+        elif isinstance(node, BinaryNode):
+            bucket.append(("binary", node, "left"))
+            bucket.append(("binary", node, "right"))
+            self._collect_prunable_nodes(node.left, bucket)
+            self._collect_prunable_nodes(node.right, bucket)
+
+    def _replace_subtree(
+        self, node: FormulaNode, target: FormulaNode, replacement: FormulaNode
+    ) -> FormulaNode:
+        if node is target:
+            return replacement.clone()
+        if isinstance(node, UnaryNode):
+            return UnaryNode(
+                op=node.op,
+                operand=self._replace_subtree(node.operand, target, replacement),
+                name=node.name,
+            )
+        if isinstance(node, BinaryNode):
+            return BinaryNode(
+                op=node.op,
+                left=self._replace_subtree(node.left, target, replacement),
+                right=self._replace_subtree(node.right, target, replacement),
+                name=node.name,
+            )
+        return node.clone()
