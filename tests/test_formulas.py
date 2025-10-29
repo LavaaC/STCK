@@ -32,3 +32,4 @@ def test_backtester_allocates_cash_and_updates_equity():
     assert result.equity_curve[0] <= result.equity_curve[-1]
     # Cash should decrease once invested
     assert result.cash_curve[0] >= result.cash_curve[-1]
+

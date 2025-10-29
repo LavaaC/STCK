@@ -11,7 +11,9 @@ from .data import PriceHistory
 
 
 class FormulaNode(Protocol):
+
     """Interface for nodes that can be evaluated and mutated."""
+
 
     def evaluate(self, history: PriceHistory) -> float:
         ...
@@ -27,6 +29,8 @@ class FormulaNode(Protocol):
 
     def describe(self) -> str:
         ...
+
+
 
 
 # Indicator nodes -----------------------------------------------------------------

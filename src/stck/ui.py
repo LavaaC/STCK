@@ -5,10 +5,14 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+
+
 from typing import List, Optional
 
 from .evolution import EvolutionEngine, GenerationReport, PopulationMetrics
 from .formulas import TradingFormula
+
+
 
 
 @dataclass
@@ -20,6 +24,8 @@ class EvolutionConsoleUI:
     population: dict[str, List[TradingFormula]] = field(init=False)
     generation: int = field(default=0, init=False)
     history: List[PopulationMetrics] = field(default_factory=list, init=False)
+
+
 
     def __post_init__(self) -> None:
         self.population = self.engine.initialize_population(self.tickers)
@@ -110,11 +116,15 @@ class EvolutionConsoleUI:
         thread.start()
         try:
             while thread.is_alive():
+
                 command = input("[p]ause/[r]esume/[q]uit> ").strip().lower()
+
                 if command in {"p", "pause"}:
                     self.pause()
                 elif command in {"r", "resume"}:
                     self.resume()
+
+
                 elif command in {"q", "quit"}:
                     self.stop()
                     break
@@ -173,6 +183,8 @@ class EvolutionConsoleUI:
     def _record_generation(self, report: GenerationReport) -> None:
         self.history.append(report.metrics)
 
+
+
     def _render_report(self, report: GenerationReport) -> None:
         metrics = report.metrics
         best = report.best_performance
@@ -187,3 +199,4 @@ class EvolutionConsoleUI:
         print(f"Evaluation windows: {windows}")
         print(f"Formula description: {best.formula.describe()}")
         print("-" * 60)
+

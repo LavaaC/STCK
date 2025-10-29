@@ -8,7 +8,9 @@ Key features:
 - **Portfolio simulation** with an uninvested cash pool and per-ticker priorities that control how capital is reallocated.
 - **Backtesting** over user-supplied historical price data to evaluate equity curves, drawdowns, and trade allocations across multiple historical windows.
 - **Evolution engine** that eliminates poorly performing formulas, protects the strongest 10%, and probabilistically retires the middle performers while mutating survivors to explore new strategies.
+
 - **Console dashboard** that displays generation-by-generation performance, supports pausing, and plots how the best performers improve over time.
+
 
 The framework is intentionally lightweight so that users can plug in their own datasets, extend the indicator library, or integrate alternative fitness scores.
 
@@ -58,3 +60,4 @@ Each generation prints the best performer, along with the average equity for the
 ```bash
 pip install matplotlib
 ```
+

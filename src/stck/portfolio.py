@@ -43,6 +43,7 @@ class BacktestResult:
     equity_curve: List[float]
     cash_curve: List[float]
 
+
     @property
     def final_equity(self) -> float:
         return self.equity_curve[-1]
@@ -76,17 +77,23 @@ class PortfolioBacktester:
         equity_curve: List[float] = []
         cash_curve: List[float] = []
 
+
+
         for index in range(len(self.data)):
             prices = self._current_prices(index)
             total_equity = portfolio.value(prices)
             desired = self._desired_allocations(index, total_equity)
+
             portfolio = self._rebalance(portfolio, prices, desired)
+
 
             allocations_history.append({ticker: shares for ticker, shares in portfolio.holdings.items()})
             equity_curve.append(portfolio.value(prices))
             cash_curve.append(portfolio.cash)
 
+
         return BacktestResult(allocations=allocations_history, equity_curve=equity_curve, cash_curve=cash_curve)
+
 
     def _desired_allocations(self, index: int, total_equity: float) -> Dict[str, float]:
         priority_order = sorted(self.allocations, key=lambda a: a.priority, reverse=True)
@@ -105,6 +112,7 @@ class PortfolioBacktester:
         portfolio: PortfolioState,
         prices: Dict[str, float],
         desired_values: Dict[str, float],
+
     ) -> PortfolioState:
         new_portfolio = portfolio.clone()
         # First, sell holdings that exceed desired values or belong to tickers without allocations.
@@ -131,3 +139,4 @@ class PortfolioBacktester:
                 new_portfolio.cash -= value_to_buy
                 new_portfolio.holdings[ticker] = current_shares + shares_to_buy
         return new_portfolio
+
