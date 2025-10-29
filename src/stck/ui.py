@@ -46,6 +46,66 @@ def generation_sequence(limit: Optional[int]) -> Iterable[int]:
     return range(limit)
 
 
+def _pluralize(count: int, noun: str) -> str:
+    suffix = "s" if count != 1 else ""
+    return f"{count} {noun}{suffix}"
+
+
+def _build_generation_lines(report: GenerationReport) -> List[str]:
+    metrics = report.metrics
+    best = report.best_member
+    if best is None:
+        return ["No performance data yet."]
+
+    lines = [
+        f"Generation {report.generation + 1}",
+        f"Top percent gain: {metrics.top_percent_gain:.2f}%",
+        f"Top 10% average gain: {metrics.top10_mean_percent:.2f}%",
+        f"Top 20% average gain: {metrics.top20_mean_percent:.2f}%",
+        f"Population average gain: {metrics.average_percent_gain:.2f}%",
+        f"Best member final equity: {best.final_equity:,.2f}",
+        f"Best member percent gain: {best.percent_gain:.2f}%",
+    ]
+
+    if report.transition is not None:
+        summary = report.transition
+        lines.extend(
+            [
+                "",
+                "Transition Summary:",
+                (
+                    f"  Preserved top 10%: "
+                    f"{_pluralize(summary.top_preserved_count, 'member')}"
+                ),
+                (
+                    f"  Culled bottom 10%: "
+                    f"{_pluralize(summary.bottom_culled_count, 'member')}"
+                ),
+                f"  Middle cohort: {summary.middle_strategy}",
+                (
+                    f"  Survivors carried forward: "
+                    f"{_pluralize(summary.survivor_count, 'member')}"
+                ),
+                (
+                    f"  Mutated clones created: "
+                    f"{_pluralize(summary.clones_created, 'clone')}"
+                ),
+            ]
+        )
+
+    lines.extend(["", "Member gains (sorted by performance):"])
+    for idx, performance in enumerate(report.performances, start=1):
+        lines.append(
+            f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
+        )
+
+    lines.extend(["", "Best member formulas:"])
+    for line in best.member.describe_formulas():
+        lines.append(f"  {line}")
+
+    return lines
+
+
 @dataclass
 class EvolutionConsoleUI:
     """Interactive console runner for the evolutionary trading simulator."""
@@ -209,27 +269,9 @@ class EvolutionConsoleUI:
         self.history.append(report.metrics)
 
     def _render_report(self, report: GenerationReport) -> None:
-        metrics = report.metrics
-        best = report.best_member
-        if best is None:
-            print("No performance data available.")
-            return
         print("=" * 60)
-        print(f"Generation {report.generation + 1}")
-        print(f"Top percent gain: {metrics.top_percent_gain:.2f}%")
-        print(f"Top 10% average gain: {metrics.top10_mean_percent:.2f}%")
-        print(f"Top 20% average gain: {metrics.top20_mean_percent:.2f}%")
-        print(f"Population average gain: {metrics.average_percent_gain:.2f}%")
-        print(f"Best member final equity: {best.final_equity:,.2f}")
-        print(f"Best member percent gain: {best.percent_gain:.2f}%")
-        print("Member gains (sorted by performance):")
-        for idx, performance in enumerate(report.performances, start=1):
-            print(
-                f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
-            )
-        print("Best member formulas:")
-        for line in best.member.describe_formulas():
-            print(f"  {line}")
+        for line in _build_generation_lines(report):
+            print(line)
         print("-" * 60)
 
 
@@ -343,32 +385,12 @@ class EvolutionTkUI:
             self.root.after(200, self._process_reports)
 
     def _format_report(self, report: GenerationReport) -> str:
-        metrics = report.metrics
-        best = report.best_member
-        if best is None:
+        lines = _build_generation_lines(report)
+        if not lines:
             return "No performance data yet."
-        lines = [
-            f"Generation: {report.generation + 1}",
-            f"Top percent gain: {metrics.top_percent_gain:.2f}%",
-            f"Top 10% average gain: {metrics.top10_mean_percent:.2f}%",
-            f"Top 20% average gain: {metrics.top20_mean_percent:.2f}%",
-            f"Population average gain: {metrics.average_percent_gain:.2f}%",
-            f"Best member final equity: {best.final_equity:,.2f}",
-            f"Best member percent gain: {best.percent_gain:.2f}%",
-            "",
-            "Member gains:",
-        ]
-        for idx, performance in enumerate(report.performances, start=1):
-            lines.append(
-                f"#{idx}: {performance.percent_gain:.2f}% | Final {performance.final_equity:,.2f}"
-            )
-        lines.extend(
-            [
-                "",
-                "Best Member Allocations:",
-                *best.member.describe_formulas(),
-            ]
-        )
+        # Replace the header to match previous colon-separated style for Tk labels.
+        if lines and lines[0].startswith("Generation "):
+            lines[0] = lines[0].replace("Generation ", "Generation: ")
         return "\n".join(lines)
 
     def _record_equity(self, report: GenerationReport) -> None:

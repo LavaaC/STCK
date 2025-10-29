@@ -102,6 +102,26 @@ class GenerationReport:
     performances: List[MemberPerformance]
     metrics: PopulationMetrics
     best_member: MemberPerformance | None
+    transition: "PopulationTransitionSummary" | None = None
+
+
+@dataclass
+class PopulationTransitionSummary:
+    """Details about how the population changed between generations."""
+
+    top_preserved_count: int
+    bottom_culled_count: int
+    middle_strategy: str
+    survivor_count: int
+    clones_created: int
+
+
+@dataclass
+class _SelectionOutcome:
+    survivors: List[PortfolioMember]
+    top_preserved_count: int
+    bottom_culled_count: int
+    middle_strategy: str
 
 
 class EvolutionEngine:
@@ -149,14 +169,24 @@ class EvolutionEngine:
         performances = [self._evaluate_member(member) for member in population]
         sorted_performances = sorted(performances, key=lambda p: p.percent_gain, reverse=True)
         metrics = self._compute_population_metrics(sorted_performances, generation)
-        survivors = self._select_survivors(sorted_performances)
-        new_population = self._repopulate(sorted_performances, survivors)
+        selection = self._select_survivors(sorted_performances)
+        new_population, clones_created = self._repopulate(
+            sorted_performances, selection.survivors
+        )
         best_member = sorted_performances[0] if sorted_performances else None
+        transition = PopulationTransitionSummary(
+            top_preserved_count=selection.top_preserved_count,
+            bottom_culled_count=selection.bottom_culled_count,
+            middle_strategy=selection.middle_strategy,
+            survivor_count=len(selection.survivors),
+            clones_created=clones_created,
+        )
         report = GenerationReport(
             generation=generation,
             performances=sorted_performances,
             metrics=metrics,
             best_member=best_member,
+            transition=transition,
         )
         return new_population, report
 
@@ -237,29 +267,60 @@ class EvolutionEngine:
             average_percent_gain=average_percent,
         )
 
-    def _select_survivors(self, performances: List[MemberPerformance]) -> List[PortfolioMember]:
+    def _select_survivors(self, performances: List[MemberPerformance]) -> _SelectionOutcome:
         count = len(performances)
         if count == 0:
-            return []
+            return _SelectionOutcome(
+                survivors=[],
+                top_preserved_count=0,
+                bottom_culled_count=0,
+                middle_strategy="No members available; repopulating from scratch.",
+            )
 
         bottom_count = max(1, int(round(count * self.config.bottom_death_fraction)))
         if bottom_count >= count:
             bottom_count = count - 1
         cutoff = max(0, count - bottom_count)
         survivors = [perf.member for perf in performances[:cutoff]]
-        return survivors
+
+        top_count = max(1, int(round(count * self.config.top_survivor_fraction)))
+        if survivors:
+            top_count = min(top_count, len(survivors))
+        else:
+            top_count = 0
+
+        middle_count = max(0, len(survivors) - top_count)
+        if middle_count > 0:
+            middle_noun = "member" if middle_count == 1 else "members"
+            bottom_noun = "performer" if bottom_count == 1 else "performers"
+            middle_strategy = (
+                f"Retained {middle_count} mid-tier {middle_noun} after removing the bottom "
+                f"{bottom_count} {bottom_noun}."
+            )
+        elif survivors:
+            middle_strategy = "No middle cohort retained; survivors are all top performers."
+        else:
+            middle_strategy = "All members were culled; survivors will be regenerated."
+
+        return _SelectionOutcome(
+            survivors=survivors,
+            top_preserved_count=top_count,
+            bottom_culled_count=bottom_count,
+            middle_strategy=middle_strategy,
+        )
 
     def _repopulate(
         self,
         performances: List[MemberPerformance],
         survivors: List[PortfolioMember],
-    ) -> List[PortfolioMember]:
+    ) -> tuple[List[PortfolioMember], int]:
         new_population: List[PortfolioMember] = list(survivors)
+        clones_created = 0
 
         if not performances:
             while len(new_population) < self.config.population_size:
                 new_population.append(self._create_initial_member())
-            return new_population
+            return new_population, clones_created
 
         top_count = max(1, int(round(len(performances) * self.config.top_survivor_fraction)))
         top_count = min(top_count, len(performances))
@@ -275,8 +336,9 @@ class EvolutionEngine:
                 continue
             child = self._mutate_member(parent)
             new_population.append(child)
+            clones_created += 1
 
-        return new_population[: self.config.population_size]
+        return new_population[: self.config.population_size], clones_created
 
     def _mutate_member(self, parent: PortfolioMember) -> PortfolioMember:
         child = parent.clone()
