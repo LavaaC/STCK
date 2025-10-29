@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from typing import List, Sequence
@@ -277,35 +278,52 @@ class EvolutionEngine:
                 middle_strategy="No members available; repopulating from scratch.",
             )
 
-        bottom_count = max(1, int(round(count * self.config.bottom_death_fraction)))
-        if bottom_count >= count:
-            bottom_count = count - 1
-        cutoff = max(0, count - bottom_count)
-        survivors = [perf.member for perf in performances[:cutoff]]
+        culled_target = math.ceil(count / 2)
+        top_target = max(1, math.ceil(count * self.config.top_survivor_fraction))
+        bottom_target = max(1, math.ceil(count * self.config.bottom_death_fraction))
 
-        top_count = max(1, int(round(count * self.config.top_survivor_fraction)))
-        if survivors:
-            top_count = min(top_count, len(survivors))
-        else:
-            top_count = 0
+        if top_target + bottom_target > count:
+            bottom_target = max(0, count - top_target)
 
-        middle_count = max(0, len(survivors) - top_count)
-        if middle_count > 0:
-            middle_noun = "member" if middle_count == 1 else "members"
-            bottom_noun = "performer" if bottom_count == 1 else "performers"
-            middle_strategy = (
-                f"Retained {middle_count} mid-tier {middle_noun} after removing the bottom "
-                f"{bottom_count} {bottom_noun}."
-            )
-        elif survivors:
-            middle_strategy = "No middle cohort retained; survivors are all top performers."
-        else:
+        culled_target = max(culled_target, bottom_target)
+        survivor_target = max(0, count - culled_target)
+
+        if survivor_target < top_target:
+            survivor_target = top_target
+            culled_target = max(0, count - survivor_target)
+
+        middle_start = min(top_target, count)
+        middle_end = max(middle_start, count - bottom_target)
+        top_segment = performances[:middle_start]
+        middle_segment = performances[middle_start:middle_end]
+
+        survivors: List[PortfolioMember] = [perf.member for perf in top_segment]
+        survivors_needed = max(0, survivor_target - len(survivors))
+        survivors.extend(perf.member for perf in middle_segment[:survivors_needed])
+
+        actual_survivor_count = len(survivors)
+        bottom_culled = count - middle_end
+        middle_culled = len(middle_segment) - max(0, survivor_target - len(top_segment))
+        if middle_culled < 0:
+            middle_culled = 0
+
+        if actual_survivor_count == 0:
             middle_strategy = "All members were culled; survivors will be regenerated."
+        else:
+            protected = min(len(top_segment), actual_survivor_count)
+            middle_strategy = (
+                "Protected top {protected} performers, culled {bottom} from the bottom tier, "
+                "and trimmed {middle} from the middle cohort to enforce a 50% cull."
+            ).format(
+                protected=protected,
+                bottom=bottom_culled,
+                middle=max(0, middle_culled),
+            )
 
         return _SelectionOutcome(
             survivors=survivors,
-            top_preserved_count=top_count,
-            bottom_culled_count=bottom_count,
+            top_preserved_count=min(len(top_segment), actual_survivor_count),
+            bottom_culled_count=max(0, bottom_culled),
             middle_strategy=middle_strategy,
         )
 
@@ -317,23 +335,28 @@ class EvolutionEngine:
         new_population: List[PortfolioMember] = list(survivors)
         clones_created = 0
 
-        if not performances:
+        if not performances and not survivors:
             while len(new_population) < self.config.population_size:
                 new_population.append(self._create_initial_member())
             return new_population, clones_created
 
-        top_count = max(1, int(round(len(performances) * self.config.top_survivor_fraction)))
-        top_count = min(top_count, len(performances))
-        parents = [performances[i].member for i in range(top_count)] or survivors
+        parents = list(survivors)
+        if not parents:
+            top_seed = max(1, min(len(performances), self.config.population_size))
+            parents = [performances[i].member for i in range(top_seed)]
+
+        for survivor in survivors:
+            if len(new_population) >= self.config.population_size:
+                break
+            child = self._mutate_member(survivor)
+            new_population.append(child)
+            clones_created += 1
 
         while len(new_population) < self.config.population_size:
-            if parents:
-                parent = self.rng.choice(parents)
-            elif survivors:
-                parent = self.rng.choice(survivors)
-            else:
+            if not parents:
                 new_population.append(self._create_initial_member())
                 continue
+            parent = self.rng.choice(parents)
             child = self._mutate_member(parent)
             new_population.append(child)
             clones_created += 1
