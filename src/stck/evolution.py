@@ -1,16 +1,15 @@
-"""Evolution engine for trading formulas."""
+"""Evolution engine for multi-asset trading formulas."""
 
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
-from typing import Dict, List
-
-from .presets import get_preset_formula
+from dataclasses import dataclass, field
+from typing import List, Sequence
 
 from .data import HistoricalData
 from .formulas import FormulaFactory, TradingFormula
 from .portfolio import PortfolioBacktester, TickerAllocation
+from .tickers import POPULAR_ETFS
 
 
 @dataclass
@@ -23,56 +22,97 @@ class EvolutionConfig:
     max_window: int = 252
     top_survivor_fraction: float = 0.1
     bottom_death_fraction: float = 0.1
+    min_tickers: int = 5
+    initial_ticker_count: int = 7
+    initial_etf_count: int = 1
 
 
 @dataclass
-class WindowPerformance:
-    window: int
-    final_equity: float
-    max_drawdown: float
-
-
-@dataclass
-class FormulaPerformance:
-    formula: TradingFormula
+class MemberAsset:
     ticker: str
-    windows: List[WindowPerformance]
+    formula: TradingFormula
+    weight: float
+    is_etf: bool = False
 
-    @property
-    def average_final_equity(self) -> float:
-        return sum(w.final_equity for w in self.windows) / len(self.windows)
+    def clone(self) -> "MemberAsset":
+        return MemberAsset(
+            ticker=self.ticker,
+            formula=self.formula.clone(),
+            weight=self.weight,
+            is_etf=self.is_etf,
+        )
 
-    @property
-    def average_max_drawdown(self) -> float:
-        return sum(w.max_drawdown for w in self.windows) / len(self.windows)
 
-    @property
-    def score(self) -> float:
-        penalty = 1.0 + self.average_max_drawdown
-        return self.average_final_equity / penalty
+@dataclass
+class PortfolioMember:
+    assets: List[MemberAsset] = field(default_factory=list)
+
+    def clone(self) -> "PortfolioMember":
+        return PortfolioMember(assets=[asset.clone() for asset in self.assets])
+
+    def tickers(self) -> List[str]:
+        return [asset.ticker for asset in self.assets]
+
+    def ticker_count(self) -> int:
+        return sum(1 for asset in self.assets if not asset.is_etf)
+
+    def etf_count(self) -> int:
+        return sum(1 for asset in self.assets if asset.is_etf)
+
+    def allocations(self) -> List[TickerAllocation]:
+        return [
+            TickerAllocation(
+                ticker=asset.ticker,
+                formula=asset.formula,
+                priority=0,
+                weight=asset.weight,
+            )
+            for asset in self.assets
+        ]
+
+    def describe_formulas(self) -> List[str]:
+        lines = []
+        for asset in self.assets:
+            lines.append(
+                f"{asset.ticker} (weight {asset.weight:.2f}) -> {asset.formula.describe()}"
+            )
+        return lines
+
+
+@dataclass
+class MemberPerformance:
+    member: PortfolioMember
+    final_equity: float
+    percent_gain: float
+    max_drawdown: float
 
 
 @dataclass
 class PopulationMetrics:
     generation: int
-    top_equity: float
-    top10_mean: float
-    top20_mean: float
-    average_equity: float
+    top_percent_gain: float
+    top10_mean_percent: float
+    top20_mean_percent: float
+    average_percent_gain: float
 
 
 @dataclass
 class GenerationReport:
     generation: int
-    ticker_performances: Dict[str, List[FormulaPerformance]]
+    performances: List[MemberPerformance]
     metrics: PopulationMetrics
-    best_performance: FormulaPerformance
+    best_member: MemberPerformance | None
 
 
 class EvolutionEngine:
-    """Manage populations of formulas per ticker and evolve them."""
+    """Manage populations of multi-asset trading formulas and evolve them."""
 
-    def __init__(self, data: HistoricalData, config: EvolutionConfig | None = None, rng: random.Random | None = None) -> None:
+    def __init__(
+        self,
+        data: HistoricalData,
+        config: EvolutionConfig | None = None,
+        rng: random.Random | None = None,
+    ) -> None:
         self.data = data
         self.config = config or EvolutionConfig()
         self.rng = rng or random.Random()
@@ -83,135 +123,228 @@ class EvolutionEngine:
             window_count_range=self.config.window_count_range,
             data_length=len(self.data),
         )
+        self._etf_universe = set(POPULAR_ETFS)
+        self.available_tickers: List[str] = []
+        self.available_etfs: List[str] = []
 
-    def initialize_population(self, tickers: List[str]) -> Dict[str, List[TradingFormula]]:
-        population: Dict[str, List[TradingFormula]] = {}
-        for ticker in tickers:
-            formulas: List[TradingFormula] = []
-            preset = get_preset_formula(ticker)
-            if preset is not None:
-                formulas.append(preset.clone())
-            while len(formulas) < self.config.population_size:
-                if formulas:
-                    parent = self.rng.choice(formulas)
-                    formulas.append(self.factory.mutate(parent))
-                else:
-                    formulas.append(self.factory.create(priority=0))
-            population[ticker] = formulas
+    # Population management ---------------------------------------------------------
+
+    def initialize_population(self, tickers: List[str]) -> List[PortfolioMember]:
+        self.available_tickers = [t for t in tickers if t not in self._etf_universe]
+        self.available_etfs = [t for t in tickers if t in self._etf_universe]
+
+        if len(self.available_tickers) < self.config.min_tickers:
+            raise ValueError(
+                "Not enough equity tickers available to satisfy minimum ticker requirement"
+            )
+
+        population: List[PortfolioMember] = []
+        for _ in range(self.config.population_size):
+            population.append(self._create_initial_member())
         return population
 
     def evolve(
-        self, population: Dict[str, List[TradingFormula]], generation: int = 0
-    ) -> tuple[Dict[str, List[TradingFormula]], GenerationReport]:
-        ticker_performances: Dict[str, List[FormulaPerformance]] = {}
-        new_population: Dict[str, List[TradingFormula]] = {}
-        all_performances: List[FormulaPerformance] = []
-
-        for ticker, formulas in population.items():
-            performances = self._evaluate_ticker(ticker, formulas)
-            ticker_performances[ticker] = performances
-            all_performances.extend(performances)
-            survivors = self._select_survivors(performances)
-            new_population[ticker] = self._repopulate(survivors)
-
-        metrics = self._compute_population_metrics(all_performances, generation)
-        best_performance = max(all_performances, key=lambda p: p.average_final_equity)
+        self, population: List[PortfolioMember], generation: int = 0
+    ) -> tuple[List[PortfolioMember], GenerationReport]:
+        performances = [self._evaluate_member(member) for member in population]
+        sorted_performances = sorted(performances, key=lambda p: p.percent_gain, reverse=True)
+        metrics = self._compute_population_metrics(sorted_performances, generation)
+        survivors = self._select_survivors(sorted_performances)
+        new_population = self._repopulate(sorted_performances, survivors)
+        best_member = sorted_performances[0] if sorted_performances else None
         report = GenerationReport(
             generation=generation,
-            ticker_performances=ticker_performances,
+            performances=sorted_performances,
             metrics=metrics,
-            best_performance=best_performance,
+            best_member=best_member,
         )
         return new_population, report
 
-    # Internal helpers -----------------------------------------------------------------
+    # Internal helpers -------------------------------------------------------------
 
-    def _evaluate_ticker(self, ticker: str, formulas: List[TradingFormula]) -> List[FormulaPerformance]:
-        performances: List[FormulaPerformance] = []
-        for formula in formulas:
-            windows = formula.evaluation_windows or [len(self.data)]
-            window_results: List[WindowPerformance] = []
-            for window in windows:
-                window_data = self.data.tail(window)
-                allocation = TickerAllocation(ticker=ticker, formula=formula, priority=formula.priority)
-                backtester = PortfolioBacktester(
-                    data=window_data,
-                    allocations=[allocation],
-                    initial_cash=self.config.initial_cash,
-                )
-                result = backtester.run()
-                window_results.append(
-                    WindowPerformance(
-                        window=len(window_data),
-                        final_equity=result.final_equity,
-                        max_drawdown=result.max_drawdown(),
-                    )
-                )
-            performances.append(FormulaPerformance(formula=formula, ticker=ticker, windows=window_results))
-        return performances
+    def _create_initial_member(self) -> PortfolioMember:
+        member = PortfolioMember()
+        ticker_choices = self._random_selection(
+            self.available_tickers, self.config.initial_ticker_count
+        )
+        etf_choices = self._random_selection(
+            self.available_etfs, self.config.initial_etf_count
+        )
+
+        for ticker in ticker_choices:
+            member.assets.append(self._create_asset(ticker, is_etf=False))
+        for ticker in etf_choices:
+            member.assets.append(self._create_asset(ticker, is_etf=True))
+
+        self._ensure_min_requirements(member)
+        return member
+
+    def _create_asset(self, ticker: str, *, is_etf: bool) -> MemberAsset:
+        formula = self.factory.create(priority=0)
+        weight = self._random_weight()
+        return MemberAsset(ticker=ticker, formula=formula, weight=weight, is_etf=is_etf)
+
+    def _random_weight(self) -> float:
+        return round(self.rng.uniform(0.05, 1.0), 3)
+
+    def _random_selection(self, universe: Sequence[str], count: int) -> List[str]:
+        if not universe:
+            return []
+        count = max(0, min(count, len(universe)))
+        return self.rng.sample(universe, count)
+
+    def _evaluate_member(self, member: PortfolioMember) -> MemberPerformance:
+        subset_prices = {ticker: self.data.prices[ticker] for ticker in member.tickers()}
+        subset_data = HistoricalData(subset_prices)
+        allocations = member.allocations()
+        backtester = PortfolioBacktester(
+            data=subset_data, allocations=allocations, initial_cash=self.config.initial_cash
+        )
+        result = backtester.run()
+        final_equity = result.final_equity
+        percent_gain = (final_equity - self.config.initial_cash) / self.config.initial_cash * 100.0
+        return MemberPerformance(
+            member=member,
+            final_equity=final_equity,
+            percent_gain=percent_gain,
+            max_drawdown=result.max_drawdown(),
+        )
 
     def _compute_population_metrics(
-        self, performances: List[FormulaPerformance], generation: int
+        self, performances: List[MemberPerformance], generation: int
     ) -> PopulationMetrics:
         if not performances:
             return PopulationMetrics(
                 generation=generation,
-                top_equity=0.0,
-                top10_mean=0.0,
-                top20_mean=0.0,
-                average_equity=0.0,
+                top_percent_gain=0.0,
+                top10_mean_percent=0.0,
+                top20_mean_percent=0.0,
+                average_percent_gain=0.0,
             )
 
-        sorted_by_equity = sorted(performances, key=lambda p: p.average_final_equity, reverse=True)
-
         def mean_for_fraction(fraction: float) -> float:
-            count = max(1, int(round(len(sorted_by_equity) * fraction)))
-            count = min(count, len(sorted_by_equity))
-            selected = sorted_by_equity[:count]
-            return sum(p.average_final_equity for p in selected) / len(selected)
+            count = max(1, int(round(len(performances) * fraction)))
+            count = min(count, len(performances))
+            selected = performances[:count]
+            return sum(p.percent_gain for p in selected) / len(selected)
 
-        average_equity = sum(p.average_final_equity for p in sorted_by_equity) / len(sorted_by_equity)
+        average_percent = sum(p.percent_gain for p in performances) / len(performances)
         return PopulationMetrics(
             generation=generation,
-            top_equity=sorted_by_equity[0].average_final_equity,
-            top10_mean=mean_for_fraction(0.1),
-            top20_mean=mean_for_fraction(0.2),
-            average_equity=average_equity,
+            top_percent_gain=performances[0].percent_gain,
+            top10_mean_percent=mean_for_fraction(0.1),
+            top20_mean_percent=mean_for_fraction(0.2),
+            average_percent_gain=average_percent,
         )
 
-    def _select_survivors(self, performances: List[FormulaPerformance]) -> List[TradingFormula]:
-        performances.sort(key=lambda p: p.score, reverse=True)
+    def _select_survivors(self, performances: List[MemberPerformance]) -> List[PortfolioMember]:
         count = len(performances)
         if count == 0:
             return []
 
-        top_count = max(1, int(round(count * self.config.top_survivor_fraction)))
         bottom_count = max(1, int(round(count * self.config.bottom_death_fraction)))
-        if top_count + bottom_count > count:
-            bottom_count = max(0, count - top_count)
-
-        survivors = [perf.formula.clone() for perf in performances[:top_count]]
-        middle = performances[top_count : count - bottom_count]
-
-        if middle:
-            middle_count = len(middle)
-            added_from_middle = False
-            for idx, perf in enumerate(middle):
-                probability = 1.0 - (idx / max(1, middle_count))
-                if self.rng.random() < probability:
-                    survivors.append(perf.formula.clone())
-                    added_from_middle = True
-            if not added_from_middle:
-                survivors.append(middle[0].formula.clone())
-
+        if bottom_count >= count:
+            bottom_count = count - 1
+        cutoff = max(0, count - bottom_count)
+        survivors = [perf.member for perf in performances[:cutoff]]
         return survivors
 
-    def _repopulate(self, survivors: List[TradingFormula]) -> List[TradingFormula]:
-        population: List[TradingFormula] = []
-        while len(population) < self.config.population_size:
-            if survivors:
+    def _repopulate(
+        self,
+        performances: List[MemberPerformance],
+        survivors: List[PortfolioMember],
+    ) -> List[PortfolioMember]:
+        new_population: List[PortfolioMember] = list(survivors)
+
+        if not performances:
+            while len(new_population) < self.config.population_size:
+                new_population.append(self._create_initial_member())
+            return new_population
+
+        top_count = max(1, int(round(len(performances) * self.config.top_survivor_fraction)))
+        top_count = min(top_count, len(performances))
+        parents = [performances[i].member for i in range(top_count)] or survivors
+
+        while len(new_population) < self.config.population_size:
+            if parents:
+                parent = self.rng.choice(parents)
+            elif survivors:
                 parent = self.rng.choice(survivors)
-                population.append(self.factory.mutate(parent))
             else:
-                population.append(self.factory.create())
-        return population
+                new_population.append(self._create_initial_member())
+                continue
+            child = self._mutate_member(parent)
+            new_population.append(child)
+
+        return new_population[: self.config.population_size]
+
+    def _mutate_member(self, parent: PortfolioMember) -> PortfolioMember:
+        child = parent.clone()
+        if not child.assets:
+            return self._create_initial_member()
+
+        action = self.rng.random()
+        if action < 0.4:
+            asset = self.rng.choice(child.assets)
+            asset.formula = self.factory.mutate(asset.formula)
+        elif action < 0.7:
+            asset = self.rng.choice(child.assets)
+            scale = self.rng.uniform(0.8, 1.2)
+            asset.weight = max(0.05, round(asset.weight * scale, 3))
+        elif action < 0.85:
+            self._add_random_asset(child)
+        else:
+            self._remove_random_asset(child)
+
+        self._ensure_min_requirements(child)
+        return child
+
+    def _add_random_asset(self, member: PortfolioMember) -> bool:
+        existing = set(member.tickers())
+        available_tickers = [t for t in self.available_tickers if t not in existing]
+        available_etfs = [t for t in self.available_etfs if t not in existing]
+
+        choices: List[tuple[str, bool]] = []
+        for ticker in available_tickers:
+            choices.append((ticker, False))
+        for ticker in available_etfs:
+            choices.append((ticker, True))
+
+        if not choices:
+            return False
+
+        ticker, is_etf = self.rng.choice(choices)
+        member.assets.append(self._create_asset(ticker, is_etf=is_etf))
+        return True
+
+    def _remove_random_asset(self, member: PortfolioMember) -> bool:
+        if not member.assets:
+            return False
+
+        ticker_assets = [asset for asset in member.assets if not asset.is_etf]
+        removable: List[MemberAsset] = []
+        if len(ticker_assets) > self.config.min_tickers:
+            removable = list(member.assets)
+        else:
+            removable = [asset for asset in member.assets if asset.is_etf]
+
+        if not removable:
+            return False
+
+        asset = self.rng.choice(removable)
+        member.assets.remove(asset)
+        return True
+
+    def _ensure_min_requirements(self, member: PortfolioMember) -> None:
+        existing = set(member.tickers())
+        ticker_pool = [t for t in self.available_tickers if t not in existing]
+        while member.ticker_count() < self.config.min_tickers and ticker_pool:
+            ticker = ticker_pool.pop(self.rng.randrange(len(ticker_pool)))
+            member.assets.append(self._create_asset(ticker, is_etf=False))
+            existing.add(ticker)
+
+        if not member.assets:
+            fallback = self._random_selection(self.available_tickers, 1)
+            for ticker in fallback:
+                member.assets.append(self._create_asset(ticker, is_etf=False))
+

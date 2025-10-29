@@ -31,10 +31,15 @@ class TickerAllocation:
     ticker: str
     formula: TradingFormula
     priority: int = 0
+    weight: float = 1.0
 
     def desired_fraction(self, history) -> float:
         fraction = self.formula.desired_fraction(history)
         return max(0.0, min(1.0, fraction))
+
+    def weighted_signal(self, history) -> float:
+        fraction = self.desired_fraction(history)
+        return fraction * max(0.0, self.weight)
 
 
 @dataclass
@@ -90,14 +95,20 @@ class PortfolioBacktester:
 
     def _desired_allocations(self, index: int, total_equity: float) -> Dict[str, float]:
         priority_order = sorted(self.allocations, key=lambda a: a.priority, reverse=True)
-        remaining_equity = total_equity
-        desired_values: Dict[str, float] = {}
+        signals: Dict[str, float] = {}
         for allocation in priority_order:
             history = self.data.history_for(allocation.ticker, index)
-            fraction = allocation.desired_fraction(history)
-            target_value = min(fraction * total_equity, remaining_equity)
-            desired_values[allocation.ticker] = target_value
-            remaining_equity = max(0.0, remaining_equity - target_value)
+            weighted = allocation.weighted_signal(history)
+            if weighted > 0:
+                signals[allocation.ticker] = signals.get(allocation.ticker, 0.0) + weighted
+
+        total_signal = sum(signals.values())
+        if total_signal <= 1e-9:
+            return {}
+
+        desired_values = {
+            ticker: (signal / total_signal) * total_equity for ticker, signal in signals.items()
+        }
         return desired_values
 
     def _rebalance(
