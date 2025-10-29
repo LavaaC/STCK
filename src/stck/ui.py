@@ -19,6 +19,7 @@ from .evolution import (
     GenerationReport,
     PopulationMetrics,
     PortfolioMember,
+    format_member_portfolio,
 )
 
 
@@ -99,9 +100,14 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
             f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
         )
 
-    lines.extend(["", "Best member formulas:"])
-    for line in best.member.describe_formulas():
-        lines.append(f"  {line}")
+    lines.append("")
+    lines.append("Best member portfolio:")
+    holdings = format_member_portfolio(best.member)
+    if holdings:
+        for line in holdings:
+            lines.append(f"  {line}")
+    else:
+        lines.append("  (no holdings)")
 
     return lines
 

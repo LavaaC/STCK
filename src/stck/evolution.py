@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import List, Sequence
+from typing import List, Sequence, Tuple
 
 from .data import HistoricalData
 from .formulas import FormulaFactory, TradingFormula
@@ -72,12 +72,18 @@ class PortfolioMember:
         ]
 
     def describe_formulas(self) -> List[str]:
-        lines = []
-        for asset in self.assets:
-            lines.append(
-                f"{asset.ticker} (weight {asset.weight:.2f}) -> {asset.formula.describe()}"
-            )
-        return lines
+        return format_member_portfolio(self)
+
+
+def format_member_portfolio(member: PortfolioMember) -> List[str]:
+    """Return human-readable strings describing a member's holdings."""
+
+    lines: List[str] = []
+    for asset in member.assets:
+        lines.append(
+            f"{asset.ticker} (weight {asset.weight:.2f}) -> {asset.formula.describe()}"
+        )
+    return lines
 
 
 @dataclass
@@ -147,6 +153,8 @@ class EvolutionEngine:
         self._etf_universe = set(POPULAR_ETFS)
         self.available_tickers: List[str] = []
         self.available_etfs: List[str] = []
+        self._elite_member: PortfolioMember | None = None
+        self._elite_signature: Tuple[Tuple[str, float, bool, str], ...] | None = None
 
     # Population management ---------------------------------------------------------
 
@@ -175,6 +183,9 @@ class EvolutionEngine:
             sorted_performances, selection.survivors
         )
         best_member = sorted_performances[0] if sorted_performances else None
+        if best_member is not None:
+            self._elite_member = best_member.member.clone()
+            self._elite_signature = self._member_signature(best_member.member)
         transition = PopulationTransitionSummary(
             top_preserved_count=selection.top_preserved_count,
             bottom_culled_count=selection.bottom_culled_count,
@@ -335,6 +346,14 @@ class EvolutionEngine:
         new_population: List[PortfolioMember] = list(survivors)
         clones_created = 0
 
+        if self._elite_member is not None and self._elite_signature is not None:
+            elite_signature = self._elite_signature
+            already_present = any(
+                self._member_signature(member) == elite_signature for member in new_population
+            )
+            if not already_present:
+                new_population.insert(0, self._elite_member.clone())
+
         if not performances and not survivors:
             while len(new_population) < self.config.population_size:
                 new_population.append(self._create_initial_member())
@@ -348,6 +367,10 @@ class EvolutionEngine:
         for survivor in survivors:
             if len(new_population) >= self.config.population_size:
                 break
+            if self._elite_signature is not None and (
+                self._member_signature(survivor) == self._elite_signature
+            ):
+                continue
             child = self._mutate_member(survivor)
             new_population.append(child)
             clones_created += 1
@@ -356,12 +379,27 @@ class EvolutionEngine:
             if not parents:
                 new_population.append(self._create_initial_member())
                 continue
-            parent = self.rng.choice(parents)
+            if self._elite_signature is not None:
+                eligible_parents = [
+                    parent
+                    for parent in parents
+                    if self._member_signature(parent) != self._elite_signature
+                ]
+            else:
+                eligible_parents = parents
+            pool = eligible_parents or parents
+            parent = self.rng.choice(pool)
             child = self._mutate_member(parent)
             new_population.append(child)
             clones_created += 1
 
         return new_population[: self.config.population_size], clones_created
+
+    def _member_signature(self, member: PortfolioMember) -> Tuple[Tuple[str, float, bool, str], ...]:
+        return tuple(
+            (asset.ticker, asset.weight, asset.is_etf, asset.formula.describe())
+            for asset in member.assets
+        )
 
     def _mutate_member(self, parent: PortfolioMember) -> PortfolioMember:
         child = parent.clone()
