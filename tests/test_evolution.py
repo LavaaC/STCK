@@ -37,3 +37,11 @@ def test_selection_elitism_and_culling():
     # Bottom performer should be culled
     bottom_description = min(performances, key=lambda p: p.average_final_equity).formula.describe()
     assert all(s.describe() != bottom_description for s in survivors)
+
+
+def test_repopulate_recovers_from_empty_survivors():
+    data = HistoricalData({"AAA": [10, 11, 12, 13, 14]})
+    engine = EvolutionEngine(data=data, config=EvolutionConfig(population_size=3), rng=random.Random(0))
+    population = engine._repopulate([])
+    assert len(population) == 3
+    assert all(isinstance(formula.priority, int) for formula in population)

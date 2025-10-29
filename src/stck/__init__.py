@@ -5,6 +5,7 @@ from .formulas import TradingFormula, FormulaFactory
 from .portfolio import PortfolioState, TickerAllocation, PortfolioBacktester, BacktestResult
 from .evolution import EvolutionEngine, EvolutionConfig, GenerationReport, PopulationMetrics
 from .ui import EvolutionConsoleUI
+from .tickers import TOP_50_TICKERS, POPULAR_ETFS, DEFAULT_TICKERS
 
 __all__ = [
     "HistoricalData",
@@ -20,4 +21,7 @@ __all__ = [
     "GenerationReport",
     "PopulationMetrics",
     "EvolutionConsoleUI",
+    "TOP_50_TICKERS",
+    "POPULAR_ETFS",
+    "DEFAULT_TICKERS",
 ]

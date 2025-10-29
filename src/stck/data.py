@@ -20,6 +20,8 @@ class HistoricalData:
         lengths = {len(series) for series in self.prices.values()}
         if not lengths:
             raise ValueError("HistoricalData requires at least one ticker")
+        if 0 in lengths:
+            raise ValueError("Price series must contain at least one observation")
         if len(lengths) != 1:
             raise ValueError("All price series must share the same length")
 
@@ -31,6 +33,9 @@ class HistoricalData:
         return len(next(iter(self.prices.values())))
 
     def history_for(self, ticker: str, index: int) -> "PriceHistory":
+        if ticker not in self.prices:
+            available = ", ".join(sorted(self.prices))
+            raise KeyError(f"Ticker '{ticker}' not found in historical data. Available: {available}")
         series = self.prices[ticker]
         if index < 0 or index >= len(series):
             raise IndexError("index out of range for price series")
