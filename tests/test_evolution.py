@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 
 from stck.data import HistoricalData
@@ -101,6 +102,31 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
     data = _build_mock_data()
     engine = EvolutionEngine(data=data, config=_default_config(), rng=random.Random(13))
 
+    def assert_rules(performances: list[MemberPerformance]) -> None:
+        outcome = engine._select_survivors(performances)  # type: ignore[attr-defined]
+        count = len(performances)
+        top_target = max(1, math.ceil(count * engine.config.top_survivor_fraction))
+        bottom_target = max(1, math.ceil(count * engine.config.bottom_death_fraction))
+        if top_target + bottom_target > count:
+            bottom_target = max(0, count - top_target)
+        expected_kills = min(count, max(math.ceil(count * 0.5), bottom_target))
+
+        assert len(outcome.survivors) == count - expected_kills
+
+        survivors = outcome.survivors
+        top_members = [performances[i].member for i in range(min(top_target, count))]
+        for member in top_members:
+            assert any(member is survivor for survivor in survivors)
+
+        if bottom_target > 0:
+            bottom_members = [
+                performances[count - i - 1].member for i in range(bottom_target)
+            ]
+            for member in bottom_members:
+                assert all(member is not survivor for survivor in survivors)
+
+        assert outcome.bottom_culled_count == bottom_target
+
     even_performances = [
         MemberPerformance(
             member=PortfolioMember(),
@@ -110,13 +136,7 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
         )
         for gain in [60, 55, 50, 45, 40, 35]
     ]
-    even_outcome = engine._select_survivors(even_performances)  # type: ignore[attr-defined]
-    assert len(even_outcome.survivors) == len(even_performances) // 2
-    assert all(
-        survivor is perf.member
-        for survivor, perf in zip(even_outcome.survivors, even_performances)
-    )
-    assert even_outcome.bottom_culled_count >= 1
+    assert_rules(even_performances)
 
     odd_performances = [
         MemberPerformance(
@@ -127,13 +147,7 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
         )
         for gain in [70, 60, 50, 40, 30]
     ]
-    odd_outcome = engine._select_survivors(odd_performances)  # type: ignore[attr-defined]
-    assert len(odd_outcome.survivors) == len(odd_performances) // 2
-    assert all(
-        survivor is perf.member
-        for survivor, perf in zip(odd_outcome.survivors, odd_performances)
-    )
-    assert odd_outcome.bottom_culled_count >= 1
+    assert_rules(odd_performances)
 
 
 def test_best_equity_curve_never_regresses() -> None:
