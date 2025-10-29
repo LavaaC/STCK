@@ -94,10 +94,14 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
             ]
         )
 
-    lines.extend(["", "Member gains (sorted by performance):"])
-    for idx, performance in enumerate(report.performances, start=1):
+    lines.extend(["", "Top performers (sorted by gain):"])
+    for idx, performance in enumerate(report.performances[:5], start=1):
         lines.append(
             f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
+        )
+    if len(report.performances) > 5:
+        lines.append(
+            f"  ... and {len(report.performances) - 5} more members."
         )
 
     lines.append("")
@@ -108,6 +112,20 @@ def _build_generation_lines(report: GenerationReport) -> List[str]:
             lines.append(f"  {line}")
     else:
         lines.append("  (no holdings)")
+
+    result = best.backtest
+    if result.cash_curve:
+        final_cash = result.cash_curve[-1]
+        min_cash = min(result.cash_curve)
+        max_cash = max(result.cash_curve)
+        lines.extend(
+            [
+                "",
+                "Best member cash utilisation:",
+                f"  Final cash: {final_cash:,.2f}",
+                f"  Cash range: {min_cash:,.2f} – {max_cash:,.2f}",
+            ]
+        )
 
     return lines
 
@@ -296,9 +314,20 @@ class EvolutionTkUI:
             raise RuntimeError("tkinter is required for EvolutionTkUI but is not available")
         self.population = self.engine.initialize_population(self.tickers)
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
         self._report_queue: queue.Queue[GenerationReport | None] = queue.Queue()
         self._latest_report: GenerationReport | None = None
         self._equity_points: List[tuple[int, float, float]] = []
+        self._detail_window: tk.Toplevel | None = None
+        self._detail_text: tk.Text | None = None
+        self._chart_window: tk.Toplevel | None = None
+        self._figure = None
+        self._axis = None
+        self._canvas = None
+        self._line_top = None
+        self._line_avg = None
+        self._plot_enabled = False
 
         self.root = tk.Tk()
         self.root.title("STCK Evolution Monitor")
@@ -314,7 +343,29 @@ class EvolutionTkUI:
             pady=8,
         )
         self.status_label.pack(fill="x", expand=False)
-        self._plot_enabled = self._init_chart()
+        controls = tk.Frame(self.root)
+        controls.pack(fill="x", expand=False, pady=(8, 0))
+        self.pause_button = tk.Button(
+            controls,
+            text="Pause",
+            width=10,
+            command=self.toggle_pause,
+        )
+        self.pause_button.pack(side="left")
+        self.details_button = tk.Button(
+            controls,
+            text="Show details",
+            command=self.show_top_performers,
+        )
+        self.details_button.pack(side="left", padx=(8, 0))
+        self.chart_button = tk.Button(
+            controls,
+            text="Show chart",
+            command=self._ensure_chart_window,
+        )
+        self.chart_button.pack(side="left", padx=(8, 0))
+
+        self._ensure_chart_window()
         message = "Initializing simulation..."
         if not self._plot_enabled:
             message += "\nInstall matplotlib for live performance charts."
@@ -335,6 +386,39 @@ class EvolutionTkUI:
 
     # Internal helpers ---------------------------------------------------------------
 
+    def pause(self) -> None:
+        if self._pause_event.is_set():
+            self._pause_event.clear()
+            self.pause_button.configure(text="Resume")
+            self.status_text.set(self.status_text.get() + "\nSimulation paused.")
+
+    def resume(self) -> None:
+        if not self._pause_event.is_set():
+            self._pause_event.set()
+            self.pause_button.configure(text="Pause")
+            self.status_text.set(self.status_text.get() + "\nResuming simulation...")
+
+    def toggle_pause(self) -> None:
+        if self._pause_event.is_set():
+            self.pause()
+        else:
+            self.resume()
+
+    def _ensure_chart_window(self) -> None:
+        if tk is None:
+            return
+        if (
+            self._plot_enabled
+            and self._chart_window is not None
+            and self._chart_window.winfo_exists()
+        ):
+            self._chart_window.deiconify()
+            self._chart_window.lift()
+            return
+        self._plot_enabled = self._init_chart()
+        if self._plot_enabled:
+            self._update_plot()
+
     def _init_chart(self) -> bool:
         try:  # pragma: no cover - optional dependency
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -345,9 +429,13 @@ class EvolutionTkUI:
             self._canvas = None
             self._line_top = None
             self._line_avg = None
+            self._chart_window = None
             return False
 
-        self._figure = Figure(figsize=(6, 3), dpi=100)
+        if self._chart_window is not None and self._chart_window.winfo_exists():
+            self._chart_window.destroy()
+
+        self._figure = Figure(figsize=(7, 3.5), dpi=100)
         self._axis = self._figure.add_subplot(111)
         self._axis.set_title("Top percent gain by generation")
         self._axis.set_xlabel("Generation")
@@ -355,16 +443,127 @@ class EvolutionTkUI:
         (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top gain")
         (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg")
         self._axis.legend(loc="upper left")
-        self._canvas = FigureCanvasTkAgg(self._figure, master=self.root)
+
+        self._chart_window = tk.Toplevel(self.root)
+        self._chart_window.title("Performance chart")
+        self._chart_window.geometry("720x360")
+        self._chart_window.protocol("WM_DELETE_WINDOW", self._on_chart_close)
+        self._canvas = FigureCanvasTkAgg(self._figure, master=self._chart_window)
         widget = self._canvas.get_tk_widget()
-        widget.pack(fill="both", expand=True, pady=(12, 0))
+        widget.pack(fill="both", expand=True, padx=8, pady=8)
         self._canvas.draw()
         return True
+
+    def _wait_if_paused(self) -> bool:
+        while not self._pause_event.is_set():
+            if self._stop_event.is_set():
+                return False
+            time.sleep(0.1)
+        return not self._stop_event.is_set()
+
+    def show_top_performers(self) -> None:
+        if self._latest_report is None:
+            self.status_text.set(self.status_text.get() + "\nTop performer data is not available yet.")
+            return
+
+        if self._detail_window is None or not self._detail_window.winfo_exists():
+            self._detail_window = tk.Toplevel(self.root)
+            self._detail_window.title("Top performer details")
+            self._detail_window.geometry("760x420")
+            self._detail_window.protocol("WM_DELETE_WINDOW", self._close_detail_window)
+
+            container = tk.Frame(self._detail_window)
+            container.pack(fill="both", expand=True, padx=8, pady=8)
+            scrollbar = tk.Scrollbar(container)
+            scrollbar.pack(side="right", fill="y")
+            self._detail_text = tk.Text(
+                container,
+                wrap="none",
+                font=("Courier", 10),
+                state="disabled",
+            )
+            self._detail_text.pack(fill="both", expand=True)
+            self._detail_text.configure(yscrollcommand=scrollbar.set)
+            scrollbar.configure(command=self._detail_text.yview)
+        else:
+            self._detail_window.deiconify()
+            self._detail_window.lift()
+
+        self._refresh_detail_window()
+
+    def _refresh_detail_window(self) -> None:
+        if self._detail_window is None or not self._detail_window.winfo_exists():
+            self._detail_window = None
+            self._detail_text = None
+            return
+        if self._detail_text is None:
+            return
+
+        content = self._build_top_performers_text()
+        self._detail_text.configure(state="normal")
+        self._detail_text.delete("1.0", tk.END)
+        self._detail_text.insert(tk.END, content)
+        self._detail_text.configure(state="disabled")
+
+    def _build_top_performers_text(self) -> str:
+        report = self._latest_report
+        if report is None or not report.performances:
+            return "No performance data yet."
+
+        lines: List[str] = []
+        for idx, performance in enumerate(report.performances[:5], start=1):
+            lines.append(
+                (
+                    f"#{idx}: Gain {performance.percent_gain:.2f}% | Final Equity "
+                    f"{performance.final_equity:,.2f}"
+                )
+            )
+            drawdown_pct = performance.max_drawdown * 100.0
+            lines.append(f"    Max drawdown: {drawdown_pct:.2f}%")
+            result = performance.backtest
+            if result.cash_curve:
+                final_cash = result.cash_curve[-1]
+                min_cash = min(result.cash_curve)
+                max_cash = max(result.cash_curve)
+                lines.append(
+                    (
+                        "    Cash range: "
+                        f"{min_cash:,.2f} – {max_cash:,.2f} | Final cash: {final_cash:,.2f}"
+                    )
+                )
+            if result.equity_curve:
+                starting_equity = result.equity_curve[0]
+                peak_equity = max(result.equity_curve)
+                lines.append(
+                    (
+                        f"    Equity start: {starting_equity:,.2f} | "
+                        f"Peak: {peak_equity:,.2f}"
+                    )
+                )
+            if idx == 1:
+                lines.append("    Holdings:")
+                holdings = format_member_portfolio(performance.member)
+                if holdings:
+                    for holding in holdings:
+                        lines.append(f"      {holding}")
+                else:
+                    lines.append("      (no holdings)")
+            lines.append("")
+
+        return "\n".join(lines).strip() + "\n"
+
+    def _close_detail_window(self) -> None:
+        if self._detail_window is not None and self._detail_window.winfo_exists():
+            self._detail_window.destroy()
+        self._detail_window = None
+        self._detail_text = None
 
     def _run_loop(self, max_generations: Optional[int]) -> None:
         limit = determine_generation_limit(self.engine.config.generations, max_generations)
         for gen in generation_sequence(limit):
             if self._stop_event.is_set():
+                break
+            if not self._wait_if_paused():
                 break
             self.population, report = self.engine.evolve(self.population, generation=gen)
             self.history.append(report.metrics)
@@ -383,6 +582,7 @@ class EvolutionTkUI:
                     return
                 self._latest_report = report
                 self.status_text.set(self._format_report(report))
+                self._refresh_detail_window()
                 self._record_equity(report)
                 self._update_plot()
         except queue.Empty:
@@ -400,8 +600,6 @@ class EvolutionTkUI:
         return "\n".join(lines)
 
     def _record_equity(self, report: GenerationReport) -> None:
-        if not self._plot_enabled:
-            return
         metrics = report.metrics
         self._equity_points.append(
             (
@@ -412,7 +610,7 @@ class EvolutionTkUI:
         )
 
     def _update_plot(self) -> None:
-        if not self._plot_enabled:
+        if not self._plot_enabled or self._canvas is None or self._axis is None:
             return
         xs = [point[0] for point in self._equity_points]
         top_values = [point[1] for point in self._equity_points]
@@ -425,4 +623,20 @@ class EvolutionTkUI:
 
     def _on_close(self) -> None:
         self._stop_event.set()
+        self._pause_event.set()
+        if self._chart_window is not None and self._chart_window.winfo_exists():
+            self._chart_window.destroy()
+        if self._detail_window is not None and self._detail_window.winfo_exists():
+            self._detail_window.destroy()
         self.root.destroy()
+
+    def _on_chart_close(self) -> None:
+        if self._chart_window is not None and self._chart_window.winfo_exists():
+            self._chart_window.destroy()
+        self._chart_window = None
+        self._canvas = None
+        self._figure = None
+        self._axis = None
+        self._line_top = None
+        self._line_avg = None
+        self._plot_enabled = False

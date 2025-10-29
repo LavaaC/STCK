@@ -12,6 +12,7 @@ from stck.evolution import (
     MemberPerformance,
     PortfolioMember,
 )
+from stck.portfolio import BacktestResult
 
 
 def _build_mock_data() -> HistoricalData:
@@ -30,6 +31,10 @@ def _default_config() -> EvolutionConfig:
         initial_ticker_count=5,
         initial_etf_count=1,
     )
+
+
+def _dummy_backtest(equity: float) -> BacktestResult:
+    return BacktestResult(allocations=[], equity_curve=[equity], cash_curve=[0.0])
 
 
 def test_evolution_produces_reports() -> None:
@@ -133,6 +138,7 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
             final_equity=engine.config.initial_cash * (1 + gain / 100.0),
             percent_gain=gain,
             max_drawdown=0.0,
+            backtest=_dummy_backtest(engine.config.initial_cash * (1 + gain / 100.0)),
         )
         for gain in [60, 55, 50, 45, 40, 35]
     ]
@@ -144,6 +150,7 @@ def test_selection_culls_half_even_and_odd_populations() -> None:
             final_equity=engine.config.initial_cash * (1 + gain / 100.0),
             percent_gain=gain,
             max_drawdown=0.0,
+            backtest=_dummy_backtest(engine.config.initial_cash * (1 + gain / 100.0)),
         )
         for gain in [70, 60, 50, 40, 30]
     ]
