@@ -14,8 +14,12 @@ try:  # pragma: no cover - optional dependency in test environments
 except ImportError:  # pragma: no cover - tkinter may be unavailable on some systems
     tk = None
 
-from .evolution import EvolutionEngine, GenerationReport, PopulationMetrics
-from .formulas import TradingFormula
+from .evolution import (
+    EvolutionEngine,
+    GenerationReport,
+    PopulationMetrics,
+    PortfolioMember,
+)
 
 
 def determine_generation_limit(
@@ -48,7 +52,7 @@ class EvolutionConsoleUI:
 
     engine: EvolutionEngine
     tickers: List[str]
-    population: dict[str, List[TradingFormula]] = field(init=False)
+    population: List[PortfolioMember] = field(init=False)
     generation: int = field(default=0, init=False)
     history: List[PopulationMetrics] = field(default_factory=list, init=False)
 
@@ -173,16 +177,16 @@ class EvolutionConsoleUI:
             return
 
         generations = [m.generation + 1 for m in self.history]
-        top_values = [m.top_equity for m in self.history]
-        top10_values = [m.top10_mean for m in self.history]
-        top20_values = [m.top20_mean for m in self.history]
+        top_values = [m.top_percent_gain for m in self.history]
+        top10_values = [m.top10_mean_percent for m in self.history]
+        top20_values = [m.top20_mean_percent for m in self.history]
 
         plt.figure(figsize=(8, 4.5))
-        plt.plot(generations, top_values, label="Top Formula")
+        plt.plot(generations, top_values, label="Top Member")
         plt.plot(generations, top10_values, label="Top 10% Avg")
         plt.plot(generations, top20_values, label="Top 20% Avg")
         plt.xlabel("Generation")
-        plt.ylabel("Final Equity")
+        plt.ylabel("Percent Gain (%)")
         plt.title("Evolution Performance by Generation")
         plt.legend()
         plt.tight_layout()
@@ -206,17 +210,26 @@ class EvolutionConsoleUI:
 
     def _render_report(self, report: GenerationReport) -> None:
         metrics = report.metrics
-        best = report.best_performance
-        windows = ", ".join(str(w.window) for w in best.windows)
+        best = report.best_member
+        if best is None:
+            print("No performance data available.")
+            return
         print("=" * 60)
         print(f"Generation {report.generation + 1}")
-        print(f"Top final equity: {metrics.top_equity:,.2f}")
-        print(f"Top 10% average equity: {metrics.top10_mean:,.2f}")
-        print(f"Top 20% average equity: {metrics.top20_mean:,.2f}")
-        print(f"Population average equity: {metrics.average_equity:,.2f}")
-        print(f"Best formula ticker: {best.ticker}")
-        print(f"Evaluation windows: {windows}")
-        print(f"Formula description: {best.formula.describe()}")
+        print(f"Top percent gain: {metrics.top_percent_gain:.2f}%")
+        print(f"Top 10% average gain: {metrics.top10_mean_percent:.2f}%")
+        print(f"Top 20% average gain: {metrics.top20_mean_percent:.2f}%")
+        print(f"Population average gain: {metrics.average_percent_gain:.2f}%")
+        print(f"Best member final equity: {best.final_equity:,.2f}")
+        print(f"Best member percent gain: {best.percent_gain:.2f}%")
+        print("Member gains (sorted by performance):")
+        for idx, performance in enumerate(report.performances, start=1):
+            print(
+                f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
+            )
+        print("Best member formulas:")
+        for line in best.member.describe_formulas():
+            print(f"  {line}")
         print("-" * 60)
 
 
@@ -226,7 +239,7 @@ class EvolutionTkUI:
 
     engine: EvolutionEngine
     tickers: List[str]
-    population: dict[str, List[TradingFormula]] = field(init=False)
+    population: List[PortfolioMember] = field(init=False)
     generation: int = field(default=0, init=False)
     history: List[PopulationMetrics] = field(default_factory=list, init=False)
 
@@ -288,10 +301,10 @@ class EvolutionTkUI:
 
         self._figure = Figure(figsize=(6, 3), dpi=100)
         self._axis = self._figure.add_subplot(111)
-        self._axis.set_title("Top equity by generation")
+        self._axis.set_title("Top percent gain by generation")
         self._axis.set_xlabel("Generation")
-        self._axis.set_ylabel("Final equity")
-        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top equity")
+        self._axis.set_ylabel("Percent gain (%)")
+        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top gain")
         (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg")
         self._axis.legend(loc="upper left")
         self._canvas = FigureCanvasTkAgg(self._figure, master=self.root)
@@ -331,20 +344,31 @@ class EvolutionTkUI:
 
     def _format_report(self, report: GenerationReport) -> str:
         metrics = report.metrics
-        best = report.best_performance
-        windows = ", ".join(str(w.window) for w in best.windows)
+        best = report.best_member
+        if best is None:
+            return "No performance data yet."
         lines = [
             f"Generation: {report.generation + 1}",
-            f"Top final equity: {metrics.top_equity:,.2f}",
-            f"Top 10% average equity: {metrics.top10_mean:,.2f}",
-            f"Top 20% average equity: {metrics.top20_mean:,.2f}",
-            f"Population average equity: {metrics.average_equity:,.2f}",
-            f"Best ticker: {best.ticker}",
-            f"Evaluation windows: {windows}",
+            f"Top percent gain: {metrics.top_percent_gain:.2f}%",
+            f"Top 10% average gain: {metrics.top10_mean_percent:.2f}%",
+            f"Top 20% average gain: {metrics.top20_mean_percent:.2f}%",
+            f"Population average gain: {metrics.average_percent_gain:.2f}%",
+            f"Best member final equity: {best.final_equity:,.2f}",
+            f"Best member percent gain: {best.percent_gain:.2f}%",
             "",
-            "Top Formula:",
-            best.formula.describe(),
+            "Member gains:",
         ]
+        for idx, performance in enumerate(report.performances, start=1):
+            lines.append(
+                f"#{idx}: {performance.percent_gain:.2f}% | Final {performance.final_equity:,.2f}"
+            )
+        lines.extend(
+            [
+                "",
+                "Best Member Allocations:",
+                *best.member.describe_formulas(),
+            ]
+        )
         return "\n".join(lines)
 
     def _record_equity(self, report: GenerationReport) -> None:
@@ -352,7 +376,11 @@ class EvolutionTkUI:
             return
         metrics = report.metrics
         self._equity_points.append(
-            (report.generation + 1, metrics.top_equity, metrics.average_equity)
+            (
+                report.generation + 1,
+                metrics.top_percent_gain,
+                metrics.average_percent_gain,
+            )
         )
 
     def _update_plot(self) -> None:
