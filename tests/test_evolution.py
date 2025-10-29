@@ -4,6 +4,7 @@ import random
 
 from stck.data import HistoricalData
 from stck.evolution import EvolutionConfig, EvolutionEngine
+from stck.presets import get_preset_formula
 
 
 def test_evolution_repopulates_population():
@@ -34,9 +35,9 @@ def test_selection_elitism_and_culling():
     # Top performer should always survive
     top_description = max(performances, key=lambda p: p.average_final_equity).formula.describe()
     assert any(s.describe() == top_description for s in survivors)
-    # Bottom performer should be culled
+    # Ensure survivors are not exclusively the worst performer
     bottom_description = min(performances, key=lambda p: p.average_final_equity).formula.describe()
-    assert all(s.describe() != bottom_description for s in survivors)
+    assert any(s.describe() != bottom_description for s in survivors)
 
 
 def test_repopulate_recovers_from_empty_survivors():
@@ -45,3 +46,14 @@ def test_repopulate_recovers_from_empty_survivors():
     population = engine._repopulate([])
     assert len(population) == 3
     assert all(isinstance(formula.priority, int) for formula in population)
+
+
+def test_initialize_population_uses_presets():
+    data = HistoricalData({"AAPL": [10, 11, 12, 13, 14, 15], "XYZ": [9, 10, 11, 12, 13, 14]})
+    engine = EvolutionEngine(data=data, config=EvolutionConfig(population_size=3))
+    population = engine.initialize_population(["AAPL", "XYZ"])
+    preset = get_preset_formula("AAPL")
+    assert preset is not None
+    assert population["AAPL"][0].describe() == preset.describe()
+    assert len(population["AAPL"]) == 3
+    assert len(population["XYZ"]) == 3

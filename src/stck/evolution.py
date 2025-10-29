@@ -6,6 +6,8 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List
 
+from .presets import get_preset_formula
+
 from .data import HistoricalData
 from .formulas import FormulaFactory, TradingFormula
 from .portfolio import PortfolioBacktester, TickerAllocation
@@ -14,7 +16,7 @@ from .portfolio import PortfolioBacktester, TickerAllocation
 @dataclass
 class EvolutionConfig:
     population_size: int = 12
-    generations: int = 10
+    generations: int = 0
     initial_cash: float = 100_000.0
     window_count_range: tuple[int, int] = (2, 4)
     min_window: int = 30
@@ -85,7 +87,16 @@ class EvolutionEngine:
     def initialize_population(self, tickers: List[str]) -> Dict[str, List[TradingFormula]]:
         population: Dict[str, List[TradingFormula]] = {}
         for ticker in tickers:
-            formulas = [self.factory.create(priority=0) for _ in range(self.config.population_size)]
+            formulas: List[TradingFormula] = []
+            preset = get_preset_formula(ticker)
+            if preset is not None:
+                formulas.append(preset.clone())
+            while len(formulas) < self.config.population_size:
+                if formulas:
+                    parent = self.rng.choice(formulas)
+                    formulas.append(self.factory.mutate(parent))
+                else:
+                    formulas.append(self.factory.create(priority=0))
             population[ticker] = formulas
         return population
 

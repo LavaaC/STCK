@@ -20,6 +20,16 @@ Install the project in editable mode (optionally with the testing extras):
 pip install -e .[test]
 ```
 
+Whenever you want to pull in the latest version of STCK just run:
+
+```bash
+stck-update
+```
+
+The command automatically uses `git pull` when the project lives inside a Git
+checkout and falls back to `pip install --upgrade stck` for packaged
+installations.
+
 Run the unit tests:
 
 ```bash
@@ -58,3 +68,7 @@ Each generation prints the best performer, along with the average equity for the
 ```bash
 pip install matplotlib
 ```
+
+The Tkinter dashboard now embeds a live chart of the top and average equity per
+generation. Leave the window open to let the engine evolve indefinitely; close
+it when you are ready to stop.

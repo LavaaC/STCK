@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 try:  # pragma: no cover - optional dependency in test environments
     import tkinter as tk
@@ -15,6 +16,30 @@ except ImportError:  # pragma: no cover - tkinter may be unavailable on some sys
 
 from .evolution import EvolutionEngine, GenerationReport, PopulationMetrics
 from .formulas import TradingFormula
+
+
+def determine_generation_limit(
+    engine_limit: int, requested_limit: Optional[int]
+) -> Optional[int]:
+    """Resolve the number of generations to run.
+
+    A limit of ``0`` or ``None`` indicates the simulation should run indefinitely
+    until manually stopped.
+    """
+
+    if requested_limit is not None:
+        return max(0, requested_limit)
+    if engine_limit and engine_limit > 0:
+        return engine_limit
+    return None
+
+
+def generation_sequence(limit: Optional[int]) -> Iterable[int]:
+    """Yield generation counters respecting ``limit`` if provided."""
+
+    if limit is None:
+        return itertools.count()
+    return range(limit)
 
 
 @dataclass
@@ -79,8 +104,8 @@ class EvolutionConsoleUI:
     ) -> None:
         """Run the evolutionary loop and optionally plot performance metrics."""
 
-        total_generations = max_generations or self.engine.config.generations
-        for gen in range(total_generations):
+        limit = determine_generation_limit(self.engine.config.generations, max_generations)
+        for gen in generation_sequence(limit):
             if self._stop_event.is_set():
                 break
             self._wait_if_paused()
@@ -212,9 +237,11 @@ class EvolutionTkUI:
         self._stop_event = threading.Event()
         self._report_queue: queue.Queue[GenerationReport | None] = queue.Queue()
         self._latest_report: GenerationReport | None = None
+        self._equity_points: List[tuple[int, float, float]] = []
 
         self.root = tk.Tk()
         self.root.title("STCK Evolution Monitor")
+        self.root.configure(padx=12, pady=12)
         self.status_text = tk.StringVar()
         self.status_label = tk.Label(
             self.root,
@@ -222,11 +249,15 @@ class EvolutionTkUI:
             justify="left",
             anchor="w",
             font=("Courier", 10),
-            padx=12,
-            pady=12,
+            padx=8,
+            pady=8,
         )
-        self.status_label.pack(fill="both", expand=True)
-        self.status_text.set("Initializing simulation...")
+        self.status_label.pack(fill="x", expand=False)
+        self._plot_enabled = self._init_chart()
+        message = "Initializing simulation..."
+        if not self._plot_enabled:
+            message += "\nInstall matplotlib for live performance charts."
+        self.status_text.set(message)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def start(self, max_generations: Optional[int] = None) -> None:
@@ -243,9 +274,35 @@ class EvolutionTkUI:
 
     # Internal helpers ---------------------------------------------------------------
 
+    def _init_chart(self) -> bool:
+        try:  # pragma: no cover - optional dependency
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+        except ImportError:  # pragma: no cover - optional dependency
+            self._figure = None
+            self._axis = None
+            self._canvas = None
+            self._line_top = None
+            self._line_avg = None
+            return False
+
+        self._figure = Figure(figsize=(6, 3), dpi=100)
+        self._axis = self._figure.add_subplot(111)
+        self._axis.set_title("Top equity by generation")
+        self._axis.set_xlabel("Generation")
+        self._axis.set_ylabel("Final equity")
+        (self._line_top,) = self._axis.plot([], [], color="#1f77b4", label="Top equity")
+        (self._line_avg,) = self._axis.plot([], [], color="#ff7f0e", label="Population avg")
+        self._axis.legend(loc="upper left")
+        self._canvas = FigureCanvasTkAgg(self._figure, master=self.root)
+        widget = self._canvas.get_tk_widget()
+        widget.pack(fill="both", expand=True, pady=(12, 0))
+        self._canvas.draw()
+        return True
+
     def _run_loop(self, max_generations: Optional[int]) -> None:
-        total_generations = max_generations or self.engine.config.generations
-        for gen in range(total_generations):
+        limit = determine_generation_limit(self.engine.config.generations, max_generations)
+        for gen in generation_sequence(limit):
             if self._stop_event.is_set():
                 break
             self.population, report = self.engine.evolve(self.population, generation=gen)
@@ -265,6 +322,8 @@ class EvolutionTkUI:
                     return
                 self._latest_report = report
                 self.status_text.set(self._format_report(report))
+                self._record_equity(report)
+                self._update_plot()
         except queue.Empty:
             pass
         if not self._stop_event.is_set():
@@ -287,6 +346,26 @@ class EvolutionTkUI:
             best.formula.describe(),
         ]
         return "\n".join(lines)
+
+    def _record_equity(self, report: GenerationReport) -> None:
+        if not self._plot_enabled:
+            return
+        metrics = report.metrics
+        self._equity_points.append(
+            (report.generation + 1, metrics.top_equity, metrics.average_equity)
+        )
+
+    def _update_plot(self) -> None:
+        if not self._plot_enabled:
+            return
+        xs = [point[0] for point in self._equity_points]
+        top_values = [point[1] for point in self._equity_points]
+        average_values = [point[2] for point in self._equity_points]
+        self._line_top.set_data(xs, top_values)
+        self._line_avg.set_data(xs, average_values)
+        self._axis.relim()
+        self._axis.autoscale_view()
+        self._canvas.draw_idle()
 
     def _on_close(self) -> None:
         self._stop_event.set()

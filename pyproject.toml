@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 stck-run = "stck.main:main"
+stck-update = "stck.updater:main"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
