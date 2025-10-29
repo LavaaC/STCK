@@ -43,6 +43,9 @@ def test_evolution_produces_reports() -> None:
     assert report.metrics.average_percent_gain <= report.metrics.top_percent_gain
     assert report.best_member is not None
     assert report.best_member.member.ticker_count() >= engine.config.min_tickers
+    assert report.transition is not None
+    assert 0 <= report.transition.survivor_count <= engine.config.population_size
+    assert report.transition.bottom_culled_count >= 0
 
 
 def test_mutation_preserves_minimum_tickers() -> None:
@@ -61,11 +64,15 @@ def test_repopulate_keeps_survivors() -> None:
     population = engine.initialize_population(list(data.tickers))
     performances = [engine._evaluate_member(member) for member in population]  # type: ignore[attr-defined]
     performances.sort(key=lambda p: p.percent_gain, reverse=True)
-    survivors = engine._select_survivors(performances)  # type: ignore[attr-defined]
-    new_population = engine._repopulate(performances, survivors)  # type: ignore[attr-defined]
+    selection = engine._select_survivors(performances)  # type: ignore[attr-defined]
+    survivors = selection.survivors
+    new_population, clones_created = engine._repopulate(  # type: ignore[attr-defined]
+        performances, survivors
+    )
 
     assert len(new_population) == engine.config.population_size
     for survivor in survivors:
         assert survivor in new_population
     if len(survivors) < engine.config.population_size:
         assert any(member not in survivors for member in new_population)
+    assert clones_created >= 0

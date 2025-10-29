@@ -3,7 +3,13 @@
 from .data import HistoricalData, PriceHistory
 from .formulas import TradingFormula, FormulaFactory
 from .portfolio import PortfolioState, TickerAllocation, PortfolioBacktester, BacktestResult
-from .evolution import EvolutionEngine, EvolutionConfig, GenerationReport, PopulationMetrics
+from .evolution import (
+    EvolutionEngine,
+    EvolutionConfig,
+    GenerationReport,
+    PopulationMetrics,
+    PopulationTransitionSummary,
+)
 from .ui import EvolutionConsoleUI, EvolutionTkUI
 from .data_fetcher import DownloadResult, fetch_historical_data
 from .tickers import TOP_50_TICKERS, POPULAR_ETFS, DEFAULT_TICKERS
@@ -21,6 +27,7 @@ __all__ = [
     "EvolutionConfig",
     "GenerationReport",
     "PopulationMetrics",
+    "PopulationTransitionSummary",
     "EvolutionConsoleUI",
     "EvolutionTkUI",
     "DownloadResult",
