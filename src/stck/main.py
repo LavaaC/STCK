@@ -40,7 +40,7 @@ def main(argv: List[str] | None = None) -> None:
 
     config = EvolutionConfig()
     if args.generations is not None:
-        config.generations = args.generations
+        config.generations = max(0, args.generations)
     if args.population is not None:
         config.population_size = args.population
     if args.cash is not None:
@@ -50,7 +50,13 @@ def main(argv: List[str] | None = None) -> None:
     engine = EvolutionEngine(download.data, config=config)
 
     ui = EvolutionTkUI(engine=engine, tickers=list(download.data.tickers))
-    ui.start(max_generations=config.generations)
+    if args.generations is not None:
+        max_generations = config.generations
+    elif config.generations > 0:
+        max_generations = config.generations
+    else:
+        max_generations = None
+    ui.start(max_generations=max_generations)
 
 
 if __name__ == "__main__":
