@@ -198,6 +198,9 @@ class EvolutionEngine:
     def _repopulate(self, survivors: List[TradingFormula]) -> List[TradingFormula]:
         population: List[TradingFormula] = []
         while len(population) < self.config.population_size:
-            parent = self.rng.choice(survivors)
-            population.append(self.factory.mutate(parent))
+            if survivors:
+                parent = self.rng.choice(survivors)
+                population.append(self.factory.mutate(parent))
+            else:
+                population.append(self.factory.create())
         return population
