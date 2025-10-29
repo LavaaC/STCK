@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+try:  # pragma: no cover - optional dependency in test environments
+    import tkinter as tk
+except ImportError:  # pragma: no cover - tkinter may be unavailable on some systems
+    tk = None
 
 from .evolution import EvolutionEngine, GenerationReport, PopulationMetrics
 from .formulas import TradingFormula
@@ -187,3 +193,101 @@ class EvolutionConsoleUI:
         print(f"Evaluation windows: {windows}")
         print(f"Formula description: {best.formula.describe()}")
         print("-" * 60)
+
+
+@dataclass
+class EvolutionTkUI:
+    """Tkinter-based UI showing live updates of the top performing formula."""
+
+    engine: EvolutionEngine
+    tickers: List[str]
+    population: dict[str, List[TradingFormula]] = field(init=False)
+    generation: int = field(default=0, init=False)
+    history: List[PopulationMetrics] = field(default_factory=list, init=False)
+
+    def __post_init__(self) -> None:
+        if tk is None:
+            raise RuntimeError("tkinter is required for EvolutionTkUI but is not available")
+        self.population = self.engine.initialize_population(self.tickers)
+        self._stop_event = threading.Event()
+        self._report_queue: queue.Queue[GenerationReport | None] = queue.Queue()
+        self._latest_report: GenerationReport | None = None
+
+        self.root = tk.Tk()
+        self.root.title("STCK Evolution Monitor")
+        self.status_text = tk.StringVar()
+        self.status_label = tk.Label(
+            self.root,
+            textvariable=self.status_text,
+            justify="left",
+            anchor="w",
+            font=("Courier", 10),
+            padx=12,
+            pady=12,
+        )
+        self.status_label.pack(fill="both", expand=True)
+        self.status_text.set("Initializing simulation...")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def start(self, max_generations: Optional[int] = None) -> None:
+        """Start the simulation and open the Tkinter window."""
+
+        worker = threading.Thread(
+            target=self._run_loop,
+            kwargs={"max_generations": max_generations},
+            daemon=True,
+        )
+        worker.start()
+        self.root.after(200, self._process_reports)
+        self.root.mainloop()
+
+    # Internal helpers ---------------------------------------------------------------
+
+    def _run_loop(self, max_generations: Optional[int]) -> None:
+        total_generations = max_generations or self.engine.config.generations
+        for gen in range(total_generations):
+            if self._stop_event.is_set():
+                break
+            self.population, report = self.engine.evolve(self.population, generation=gen)
+            self.history.append(report.metrics)
+            self._report_queue.put(report)
+            self.generation = gen + 1
+        self._report_queue.put(None)
+
+    def _process_reports(self) -> None:
+        try:
+            while True:
+                report = self._report_queue.get_nowait()
+                if report is None:
+                    self.status_text.set(self.status_text.get() + "\nSimulation complete.")
+                    self._stop_event.set()
+                    self.root.after(500, self.root.destroy)
+                    return
+                self._latest_report = report
+                self.status_text.set(self._format_report(report))
+        except queue.Empty:
+            pass
+        if not self._stop_event.is_set():
+            self.root.after(200, self._process_reports)
+
+    def _format_report(self, report: GenerationReport) -> str:
+        metrics = report.metrics
+        best = report.best_performance
+        windows = ", ".join(str(w.window) for w in best.windows)
+        lines = [
+            f"Generation: {report.generation + 1}",
+            f"Top final equity: {metrics.top_equity:,.2f}",
+            f"Top 10% average equity: {metrics.top10_mean:,.2f}",
+            f"Top 20% average equity: {metrics.top20_mean:,.2f}",
+            f"Population average equity: {metrics.average_equity:,.2f}",
+            f"Best ticker: {best.ticker}",
+            f"Evaluation windows: {windows}",
+            "",
+            "Top Formula:",
+            best.formula.describe(),
+        ]
+        return "\n".join(lines)
+
+    def _on_close(self) -> None:
+        self._stop_event.set()
+        self.root.destroy()
