@@ -9,13 +9,13 @@ from typing import List, Sequence, Tuple
 
 from .data import HistoricalData
 from .formulas import FormulaFactory, TradingFormula
-from .portfolio import PortfolioBacktester, TickerAllocation
+from .portfolio import BacktestResult, PortfolioBacktester, TickerAllocation
 from .tickers import POPULAR_ETFS
 
 
 @dataclass
 class EvolutionConfig:
-    population_size: int = 12
+    population_size: int = 50
     generations: int = 0
     initial_cash: float = 100_000.0
     window_count_range: tuple[int, int] = (2, 4)
@@ -23,9 +23,13 @@ class EvolutionConfig:
     max_window: int = 252
     top_survivor_fraction: float = 0.1
     bottom_death_fraction: float = 0.1
-    min_tickers: int = 5
-    initial_ticker_count: int = 7
-    initial_etf_count: int = 1
+    min_tickers: int = 10
+    initial_ticker_count: int = 13
+    initial_etf_count: int = 2
+    formula_mutation_chance: float = 0.75
+    formula_mutation_attempts: int = 2
+    weight_mutation_chance: float = 0.6
+    asset_mutation_chance: float = 0.55
 
 
 @dataclass
@@ -92,6 +96,7 @@ class MemberPerformance:
     final_equity: float
     percent_gain: float
     max_drawdown: float
+    backtest: BacktestResult
 
 
 @dataclass
@@ -250,6 +255,7 @@ class EvolutionEngine:
             final_equity=final_equity,
             percent_gain=percent_gain,
             max_drawdown=result.max_drawdown(),
+            backtest=result,
         )
 
     def _compute_population_metrics(
@@ -408,18 +414,36 @@ class EvolutionEngine:
         if not child.assets:
             return self._create_initial_member()
 
-        action = self.rng.random()
-        if action < 0.4:
+        mutated = False
+
+        for _ in range(self.config.formula_mutation_attempts):
+            if child.assets and self.rng.random() < self.config.formula_mutation_chance:
+                asset = self.rng.choice(child.assets)
+                asset.formula = self.factory.mutate(asset.formula)
+                mutated = True
+
+        if child.assets and self.rng.random() < self.config.weight_mutation_chance:
+            asset = self.rng.choice(child.assets)
+            scale = self.rng.uniform(0.8, 1.25)
+            asset.weight = max(0.05, round(asset.weight * scale, 3))
+            mutated = True
+
+        if self.rng.random() < self.config.asset_mutation_chance:
+            change_performed = False
+            add_first = not child.assets or self.rng.random() < 0.55
+            if add_first:
+                change_performed = self._add_random_asset(child)
+                if not change_performed:
+                    change_performed = self._remove_random_asset(child)
+            else:
+                change_performed = self._remove_random_asset(child)
+                if not change_performed:
+                    change_performed = self._add_random_asset(child)
+            mutated = mutated or change_performed
+
+        if not mutated and child.assets:
             asset = self.rng.choice(child.assets)
             asset.formula = self.factory.mutate(asset.formula)
-        elif action < 0.7:
-            asset = self.rng.choice(child.assets)
-            scale = self.rng.uniform(0.8, 1.2)
-            asset.weight = max(0.05, round(asset.weight * scale, 3))
-        elif action < 0.85:
-            self._add_random_asset(child)
-        else:
-            self._remove_random_asset(child)
 
         self._ensure_min_requirements(child)
         return child
