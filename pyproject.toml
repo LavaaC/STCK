@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=67"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stck"
+version = "0.1.0"
+description = "Evolutionary trading formula simulator"
+requires-python = ">=3.11"
+authors = [
+    {name = "STCK Team"}
+]
+readme = "README.md"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = ["tests"]
