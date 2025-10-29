@@ -22,6 +22,15 @@ from .evolution import (
 )
 
 
+def format_member_portfolio(member: PortfolioMember) -> List[str]:
+    """Return ticker/formula strings for a portfolio member."""
+
+    lines: List[str] = []
+    for asset in member.assets:
+        lines.append(f"{asset.ticker}: {asset.formula.describe()}")
+    return lines
+
+
 def determine_generation_limit(
     engine_limit: int, requested_limit: Optional[int]
 ) -> Optional[int]:
@@ -227,8 +236,8 @@ class EvolutionConsoleUI:
             print(
                 f"  #{idx}: {performance.percent_gain:.2f}% | Final Equity {performance.final_equity:,.2f}"
             )
-        print("Best member formulas:")
-        for line in best.member.describe_formulas():
+        print("Best member portfolio:")
+        for line in format_member_portfolio(best.member):
             print(f"  {line}")
         print("-" * 60)
 
@@ -365,8 +374,8 @@ class EvolutionTkUI:
         lines.extend(
             [
                 "",
-                "Best Member Allocations:",
-                *best.member.describe_formulas(),
+                "Best member portfolio:",
+                *format_member_portfolio(best.member),
             ]
         )
         return "\n".join(lines)
